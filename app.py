@@ -6,6 +6,9 @@ from datetime import datetime, timedelta, date
 from streamlit_calendar import calendar
 
 
+# ... (上面的 import 不要動) ...
+# from streamlit_calendar import calendar
+
 # --- 🛠️ 針對 Python 3.12+ 的日期修正 ---
 def adapt_date_iso(val):
     return val.isoformat()
@@ -27,6 +30,107 @@ def get_connection():
     return sqlite3.connect(DB_FILE)
 
 
+# ============== 👇 新增這段：自動建立資料表 👇 ==============
+def init_db():
+    """如果資料庫不存在，就自動建立所有需要的表格"""
+    conn = get_connection()
+    c = conn.cursor()
+
+    # 1. 建立學生表
+    c.execute('''
+              CREATE TABLE IF NOT EXISTS students
+              (
+                  id
+                  INTEGER
+                  PRIMARY
+                  KEY
+                  AUTOINCREMENT,
+                  name
+                  TEXT
+                  NOT
+                  NULL,
+                  parent_contact
+                  TEXT,
+                  default_rate
+                  INTEGER,
+                  color
+                  TEXT
+              )
+              ''')
+
+    # 2. 建立課程表
+    c.execute('''
+              CREATE TABLE IF NOT EXISTS sessions
+              (
+                  id
+                  INTEGER
+                  PRIMARY
+                  KEY
+                  AUTOINCREMENT,
+                  student_id
+                  INTEGER,
+                  start_time
+                  TEXT,
+                  end_time
+                  TEXT,
+                  status
+                  TEXT,
+                  actual_rate
+                  INTEGER,
+                  invoice_id
+                  INTEGER,
+                  FOREIGN
+                  KEY
+              (
+                  student_id
+              ) REFERENCES students
+              (
+                  id
+              )
+                  )
+              ''')
+
+    # 3. 建立帳單表
+    c.execute('''
+              CREATE TABLE IF NOT EXISTS invoices
+              (
+                  id
+                  INTEGER
+                  PRIMARY
+                  KEY
+                  AUTOINCREMENT,
+                  student_id
+                  INTEGER,
+                  total_amount
+                  INTEGER,
+                  created_at
+                  TEXT,
+                  is_paid
+                  INTEGER
+                  DEFAULT
+                  0,
+                  FOREIGN
+                  KEY
+              (
+                  student_id
+              ) REFERENCES students
+              (
+                  id
+              )
+                  )
+              ''')
+
+    conn.commit()
+    conn.close()
+
+
+# 🔥 每次程式啟動時，先執行一次檢查
+init_db()
+# ==========================================================
+
+# ... (下面接原本的 st.set_page_config ...)
+# st.set_page_config(page_title="老師排課小幫手", page_icon="🎓", layout="centered")
+
 # --- 頁面設定 ---
 st.set_page_config(page_title="老師排課小幫手", page_icon="🎓", layout="centered")
 
@@ -46,7 +150,7 @@ st.markdown("""
 if 'edit_session_id' not in st.session_state:
     st.session_state.edit_session_id = None
 
-st.title("🚀 炯翃的超級家教系統")
+st.title("🚀 天才的超級家教系統")
 
 # --- 導航分頁 ---
 tab1, tab2, tab3, tab4 = st.tabs(["🏠 概況", "📅 排課", "💰 帳單", "🧑‍🎓 學生"])
