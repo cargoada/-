@@ -122,11 +122,13 @@ def delete_google_event(event_id):
 
 # --- 資料庫操作 (關鍵：要傳入 spreadsheet 參數) ---
 def get_data(worksheet_name):
+    # 移除 try...except，這樣如果有錯，螢幕會直接顯示紅字告訴我們原因
+    # 或是保留但加入 st.error
     try:
-        # ⚠️ 關鍵修正：這裡指定要讀取「當前使用者的 Sheet URL」
-        df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=0)
+        # 👇 這裡改成了 ttl=5
+        df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=5)
 
-        # 欄位型別轉換
+        # 欄位型別轉換 (保持不變)
         if worksheet_name == 'students':
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
         elif worksheet_name == 'sessions':
@@ -138,7 +140,9 @@ def get_data(worksheet_name):
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
             df['student_id'] = pd.to_numeric(df['student_id'], errors='coerce').fillna(0).astype(int)
         return df
-    except:
+    except Exception as e:
+        # 👇 讓錯誤顯示出來，這樣我們才知道發生什麼事 (如果是 Quota exceeded 就是請求太多次)
+        st.warning(f"讀取 {worksheet_name} 時遇到連線問題 (若是頻率限制請稍等)：{e}")
         return pd.DataFrame()
 
 
