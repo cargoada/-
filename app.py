@@ -121,14 +121,14 @@ def delete_google_event(event_id):
 
 
 # --- 資料庫操作 (關鍵：要傳入 spreadsheet 參數) ---
+# 👇 找到原本的 get_data，整段換成這個
 def get_data(worksheet_name):
-    # 移除 try...except，這樣如果有錯，螢幕會直接顯示紅字告訴我們原因
-    # 或是保留但加入 st.error
     try:
-        # 👇 這裡改成了 ttl=5
-        df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=5)
+        # 🟢 關鍵修改：ttl=600 (快取 10 分鐘)
+        # 這樣你一分鐘內操作 100 次，也只會算 1 次讀取，絕對不會被鎖！
+        df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=600)
 
-        # 欄位型別轉換 (保持不變)
+        # 資料清理 (保持不變)
         if worksheet_name == 'students':
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
         elif worksheet_name == 'sessions':
@@ -141,14 +141,24 @@ def get_data(worksheet_name):
             df['student_id'] = pd.to_numeric(df['student_id'], errors='coerce').fillna(0).astype(int)
         return df
     except Exception as e:
-        # 👇 讓錯誤顯示出來，這樣我們才知道發生什麼事 (如果是 Quota exceeded 就是請求太多次)
-        st.warning(f"讀取 {worksheet_name} 時遇到連線問題 (若是頻率限制請稍等)：{e}")
+        # 遇到錯誤時，回傳空表，並在右上角偷偷顯示警告就好，不要讓程式當掉
+        st.toast(f"連線忙碌中，請稍後再試...", icon="⏳")
         return pd.DataFrame()
 
 
+# 👇 找到原本的 update_data，整段換成這個
 def update_data(worksheet_name, df):
-    # ⚠️ 關鍵修正：寫入時也要指定 URL
-    conn.update(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, data=df)
+    try:
+        # 1. 寫入 Google Sheet
+        conn.update(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, data=df)
+
+        # 2. 🟢 關鍵動作：寫入成功後，清除快取！
+        # 這樣下次讀取時才會抓到最新的，確保你剛加的學生馬上出現
+        st.cache_data.clear()
+        st.cache_resource.clear()
+
+    except Exception as e:
+        st.error(f"寫入失敗：{e}")
 
 
 def get_next_id(df):
