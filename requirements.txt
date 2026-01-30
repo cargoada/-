@@ -4,4 +4,5 @@ st-gsheets-connection
 google-api-python-client  
 google-auth               
 streamlit-calendar        
+google-oauth2
 
