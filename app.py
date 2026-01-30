@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
+from streamlit_calendar import calendar  # 👈 這是剛剛漏掉的關鍵！
 
-# 👇👇👇 Google API 專用套件 👇👇👇
+# 👇 Google API 專用套件
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-
 # ==========================================
 # 1. Google 服務連線設定 (自動啟動機器人)
 # ==========================================
