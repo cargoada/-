@@ -4,8 +4,47 @@ import time
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
 from streamlit_calendar import calendar
+# 👇👇👇 請把這段插入在 import 區塊的下方 👇👇👇
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+# 1. 設定權限範圍 (同時包含日曆和試算表)
+SCOPES = [
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/spreadsheets'
+]
+
+# 2. 從 Streamlit Secrets 讀取憑證
+# (這裡會嘗試抓取你原本設定給 Google Sheet 用的那組密碼)
+try:
+    if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+        # 這是新版 Streamlit GSheets Connection 的預設位置
+        creds_dict = dict(st.secrets["connections"]["gsheets"])
+    elif "gcp_service_account" in st.secrets:
+        # 這是舊版或自訂名稱的位置
+        creds_dict = dict(st.secrets["gcp_service_account"])
+    else:
+        # 如果都沒找到，嘗試直接抓 users 裡面的設定 (視你的 secrets.toml 結構而定)
+        # 這裡假設至少有一組能用的 Service Account JSON
+        st.error("找不到 Google 憑證，請檢查 secrets.toml")
+        st.stop()
+
+    # 3. 建立憑證物件
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict, scopes=SCOPES
+    )
+
+    # 4. 關鍵：定義 service 變數 (這就是你的日曆機器人！)
+    service = build('calendar', 'v3', credentials=creds)
+
+except Exception as e:
+    st.error(f"無法連線 Google 服務：{e}")
+    # 為了避免程式當掉，這裡給一個空的 service，但功能會失效
+    service = None
+
+# 👆👆👆 插入結束 👆👆👆
+
 
 # --- 頁面設定 ---
 st.set_page_config(page_title="超級家教系統 (多人版)", page_icon="🏫", layout="centered")
