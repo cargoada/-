@@ -342,63 +342,142 @@ with tab2:
                         update_data("sessions", df_sess)
                         st.rerun()
 
-# ================= Tab 3: 帳單 =================
+# ================= Tab 3: 帳單 (詳細明細版) =================
 with tab3:
     st.subheader("💰 帳單中心")
+
+    # 重新讀取資料
+    df_sess = get_data("sessions")
+    df_inv = get_data("invoices")
+    df_stu = get_data("students")
+
+    # --- 1. 結算按鈕 ---
     if st.button("⚡ 一鍵結算 (產生本月帳單)", type="primary"):
-        df_inv = get_data("invoices")
+        # 找出「已完成」且「還沒綁定 invoice_id」的課程
         pending_mask = (df_sess['status'] == '已完成') & (df_sess['invoice_id'].fillna(0) == 0)
         p_sids = df_sess[pending_mask]['student_id'].unique()
 
         if len(p_sids) > 0:
+            count = 0
             for sid in p_sids:
-                # 計算金額
+                # 抓出該學生這次要結算的課
                 sub_df = df_sess[(df_sess['student_id'] == sid) & pending_mask]
-                amt = sum(
-                    ((pd.to_datetime(r['end_time']) - pd.to_datetime(r['start_time'])).total_seconds() / 3600) * r[
-                        'actual_rate'] for _, r in sub_df.iterrows())
+                if sub_df.empty: continue
 
-                # 找舊帳單或開新單
+                # 計算總金額
+                amt = 0
+                for _, r in sub_df.iterrows():
+                    s = pd.to_datetime(r['start_time'])
+                    e = pd.to_datetime(r['end_time'])
+                    h = (e - s).total_seconds() / 3600
+                    amt += h * int(r['actual_rate'])
+
+                # 找舊帳單 (合併) 或開新單
                 inv_id = None
                 if not df_inv.empty:
                     unpaid = df_inv[(df_inv['student_id'] == sid) & (df_inv['is_paid'] == 0)]
                     if not unpaid.empty:
                         inv_id = unpaid.iloc[0]['id']
                         df_inv.loc[df_inv['id'] == inv_id, 'total_amount'] += int(amt)
+                        df_inv.loc[df_inv['id'] == inv_id, 'created_at'] = datetime.now().isoformat()
 
+                # 如果沒舊帳單，就開新的
                 if inv_id is None:
                     inv_id = get_next_id(df_inv)
-                    new_inv = pd.DataFrame([{'id': inv_id, 'student_id': sid, 'total_amount': int(amt),
-                                             'created_at': datetime.now().isoformat(), 'is_paid': 0}])
+                    new_inv = pd.DataFrame([{
+                        'id': inv_id, 'student_id': sid,
+                        'total_amount': int(amt),
+                        'created_at': datetime.now().isoformat(),
+                        'is_paid': 0
+                    }])
                     df_inv = pd.concat([df_inv, new_inv], ignore_index=True)
 
-                # 更新課程
+                # 關鍵：把 invoice_id 寫回課程表 (這樣才查得到明細)
                 df_sess.loc[sub_df.index, 'invoice_id'] = inv_id
+                count += 1
 
             update_data("invoices", df_inv)
             update_data("sessions", df_sess)
-            st.success("結算完成！")
+            st.success(f"成功產出 {count} 張帳單！")
+            time.sleep(1)
             st.rerun()
         else:
-            st.info("沒有未結算的課程")
+            st.info("目前沒有需要結算的課程 (記得先把排課狀態改成「已完成」喔)")
 
-    # 顯示未付款
-    df_inv = get_data("invoices")
+    st.divider()
+
+    # --- 2. 顯示未付款帳單 (含明細) ---
+    st.subheader("🧾 待收款項")
+
     if not df_inv.empty:
         unpaid = df_inv[df_inv['is_paid'] == 0]
         if not unpaid.empty:
+            # 合併學生名字
             df_disp = pd.merge(unpaid, df_stu, left_on='student_id', right_on='id')
-            for _, row in df_disp.iterrows():
-                with st.container(border=True):
-                    c1, c2 = st.columns([3, 1])
-                    c1.markdown(f"**{row['name']}** - ${row['total_amount']:,}")
-                    if c2.button("收款", key=f"pay{row['id_x']}"):
-                        df_inv.loc[df_inv['id'] == row['id_x'], 'is_paid'] = 1
-                        update_data("invoices", df_inv)
-                        st.rerun()
-        else:
-            st.write("👏 目前沒有待收款項")
+            # 依日期排序
+            df_disp = df_disp.sort_values('created_at', ascending=False)
 
+            for _, row in df_disp.iterrows():
+                inv_id = row['id_x']  # 帳單 ID
+                name = row['name']
+                amt = int(row['total_amount'])
+                date_str = pd.to_datetime(row['created_at']).strftime('%Y/%m/%d')
+
+                with st.container(border=True):
+                    # 上半部：標題與收款按鈕
+                    c1, c2 = st.columns([3, 1])
+                    c1.markdown(f"**{name}** - ${amt:,}")
+                    c1.caption(f"📅 出帳日期：{date_str}")
+
+                    if c2.button("✅ 收款", key=f"pay_{inv_id}"):
+                        df_inv.loc[df_inv['id'] == inv_id, 'is_paid'] = 1
+                        update_data("invoices", df_inv)
+                        st.toast(f"已收到 {name} 的款項！", icon="💰")
+                        time.sleep(1)
+                        st.rerun()
+
+                    # 下半部：詳細明細 (Expander)
+                    with st.expander("📄 查看上課明細 / 下載 Excel"):
+                        # 撈出這張帳單的所有課程
+                        # 邏輯：去 sessions 表找 invoice_id 等於目前這張單子的
+                        # 確保 invoice_id 是整數再比對
+                        details_mask = (pd.to_numeric(df_sess['invoice_id'], errors='coerce') == inv_id)
+                        my_details = df_sess[details_mask].copy()
+
+                        if not my_details.empty:
+                            # 整理資料給使用者看
+                            display_data = []
+                            for _, r in my_details.iterrows():
+                                s = pd.to_datetime(r['start_time'])
+                                e = pd.to_datetime(r['end_time'])
+                                h = (e - s).total_seconds() / 3600
+                                cost = h * int(r['actual_rate'])
+                                display_data.append({
+                                    "日期": s.strftime('%m/%d (%a)'),
+                                    "時間": f"{s.strftime('%H:%M')}~{e.strftime('%H:%M')}",
+                                    "時數": h,
+                                    "時薪": int(r['actual_rate']),
+                                    "小計": int(cost)
+                                })
+
+                            df_show = pd.DataFrame(display_data)
+                            st.table(df_show)
+
+                            # 下載 CSV 按鈕
+                            csv = df_show.to_csv(index=False).encode('utf-8-sig')
+                            st.download_button(
+                                label="📥 下載明細 (傳給家長)",
+                                data=csv,
+                                file_name=f"{name}_{date_str}_學費明細.csv",
+                                mime='text/csv',
+                                key=f"dl_{inv_id}"
+                            )
+                        else:
+                            st.warning("⚠️ 查無明細 (可能是舊資料或手動修改過)")
+        else:
+            st.success("👏 太棒了！目前沒有待收款項。")
+    else:
+        st.info("尚無帳單資料。")
 # ================= Tab 4: 學生 =================
 with tab4:
     st.subheader("🧑‍🎓 學生管理")
