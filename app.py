@@ -124,28 +124,33 @@ def delete_google_event(event_id):
 # 👇 找到原本的 get_data，整段換成這個
 def get_data(worksheet_name):
     try:
-        # 🟢 關鍵修改：ttl=600 (快取 10 分鐘)
-        # 這樣你一分鐘內操作 100 次，也只會算 1 次讀取，絕對不會被鎖！
+        # 讀取資料 (快取 10 分鐘)
         df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=600)
 
-        # 資料清理 (保持不變)
+        # 🛡️ 針對不同分頁，進行嚴格的型別轉換
         if worksheet_name == 'students':
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+            df['default_rate'] = pd.to_numeric(df['default_rate'], errors='coerce').fillna(0).astype(int)
+
         elif worksheet_name == 'sessions':
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
             df['student_id'] = pd.to_numeric(df['student_id'], errors='coerce').fillna(0).astype(int)
+            # invoice_id 允許是空值 (Int64)
             df['invoice_id'] = pd.to_numeric(df['invoice_id'], errors='coerce').astype('Int64')
+            df['actual_rate'] = pd.to_numeric(df['actual_rate'], errors='coerce').fillna(0).astype(int)
             if 'google_event_id' not in df.columns: df['google_event_id'] = ""
+
         elif worksheet_name == 'invoices':
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
             df['student_id'] = pd.to_numeric(df['student_id'], errors='coerce').fillna(0).astype(int)
+            # 👇 關鍵修正：確保金額和付款狀態一定是數字
+            df['total_amount'] = pd.to_numeric(df['total_amount'], errors='coerce').fillna(0).astype(int)
+            df['is_paid'] = pd.to_numeric(df['is_paid'], errors='coerce').fillna(0).astype(int)
+
         return df
     except Exception as e:
-        # 遇到錯誤時，回傳空表，並在右上角偷偷顯示警告就好，不要讓程式當掉
         st.toast(f"連線忙碌中，請稍後再試...", icon="⏳")
         return pd.DataFrame()
-
-
 # 👇 找到原本的 update_data，整段換成這個
 def update_data(worksheet_name, df):
     try:
@@ -436,9 +441,9 @@ with tab3:
     with st.expander("⚡ 生成帳單 (結算本月學費)", expanded=True):
         st.caption("系統會自動將同一個學生的未結課程合併成一張帳單。")
         if st.button("⚡ 一鍵結算", type="primary"):
-            # 找出「已完成」且「還沒綁定 invoice_id」的課程
-            pending_mask = (df_sess['status'] == '已完成') & (
-                        (df_sess['invoice_id'].isna()) | (df_sess['invoice_id'] == 0))
+            # 1. 找出「已完成」且「還沒綁定 invoice_id」的課程
+            # 使用 fillna(0) 確保不會因為空值而漏抓
+            pending_mask = (df_sess['status'] == '已完成') & (df_sess['invoice_id'].fillna(0) == 0)
             pending_sids = df_sess[pending_mask]['student_id'].unique()
 
             if len(pending_sids) == 0:
@@ -452,42 +457,52 @@ with tab3:
                     s_mask = (df_sess['student_id'] == sid) & pending_mask
                     my_sessions = df_sess[s_mask]
 
-                    # 計算總金額
-                    total = 0
+                    # 計算這次新增的金額
+                    total_new = 0
                     for _, r in my_sessions.iterrows():
                         s = pd.to_datetime(r['start_time'])
                         e = pd.to_datetime(r['end_time'])
                         hours = (e - s).total_seconds() / 3600
-                        total += hours * r['actual_rate']
+                        total_new += hours * r['actual_rate']
 
                     # 檢查該學生是否有「未付款」的舊帳單 (要合併)
-                    inv_id = get_next_id(df_inv)  # 預設新 ID
+                    inv_id = None
 
                     if not df_inv.empty:
+                        # 嚴格篩選：is_paid 必須等於 0
                         unpaid_mask = (df_inv['student_id'] == sid) & (df_inv['is_paid'] == 0)
+
                         if unpaid_mask.any():
                             # --- 合併模式 ---
+                            # 抓出最新的一張未付帳單
                             target_inv = df_inv[unpaid_mask].sort_values('created_at', ascending=False).iloc[0]
                             inv_id = target_inv['id']
-                            # 更新金額與日期
-                            df_inv.loc[df_inv['id'] == inv_id, 'total_amount'] += int(total)
+
+                            # 確保舊金額是數字，避免出錯
+                            old_amount = int(target_inv['total_amount'])
+                            new_total = old_amount + int(total_new)
+
+                            # 更新 DataFrame
+                            df_inv.loc[df_inv['id'] == inv_id, 'total_amount'] = new_total
                             df_inv.loc[df_inv['id'] == inv_id, 'created_at'] = datetime.now().isoformat()
-                        else:
-                            # --- 新增模式 ---
-                            new_inv = pd.DataFrame([{
-                                'id': inv_id, 'student_id': sid, 'total_amount': int(total),
-                                'created_at': datetime.now().isoformat(), 'is_paid': 0
-                            }])
-                            df_inv = pd.concat([df_inv, new_inv], ignore_index=True)
-                    else:
-                        # --- 第一筆資料模式 ---
+                            # 顯示訊息幫助除錯
+                            # st.toast(f"合併帳單 #{inv_id}: ${old_amount} + ${int(total_new)}")
+
+                    # 如果沒找到舊帳單 (inv_id 還是 None)，就新增一張
+                    if inv_id is None:
+                        # --- 新增模式 ---
+                        inv_id = get_next_id(df_inv)
                         new_inv = pd.DataFrame([{
-                            'id': inv_id, 'student_id': sid, 'total_amount': int(total),
-                            'created_at': datetime.now().isoformat(), 'is_paid': 0
+                            'id': inv_id,
+                            'student_id': sid,
+                            'total_amount': int(total_new),
+                            'created_at': datetime.now().isoformat(),
+                            'is_paid': 0
                         }])
                         df_inv = pd.concat([df_inv, new_inv], ignore_index=True)
 
                     # 關鍵：把這些課程的 invoice_id 更新為這張帳單的 ID
+                    # 確保 inv_id 格式正確
                     df_sess.loc[s_mask, 'invoice_id'] = inv_id
 
                 # 寫入資料庫
