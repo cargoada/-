@@ -33,14 +33,20 @@ try:
 except Exception as e:
     print(f"Google 日曆連線失敗: {e}")
 
-# --- 多使用者切換邏輯 ---
+# --- 多使用者切換邏輯 (修正版) ---
 st.sidebar.header("👤 使用者切換")
 try:
     if "users" in st.secrets:
+        # 1. 取得使用者資料
         user_dict = st.secrets["users"]
         user_list = list(user_dict.keys())
+
+        # 2. 讓用戶選擇
         selected_user = st.sidebar.selectbox("請選擇使用者", user_list, key="user_selector")
-        CURRENT_SHEET_URL = user_dict[selected_user]["sheet_url"]
+
+        # 3. 直接讀取網址 (解決 string indices 錯誤)
+        CURRENT_SHEET_URL = user_dict[selected_user]
+
         st.sidebar.success(f"目前身分：{selected_user}")
     else:
         st.error("❌ Secrets 中找不到 [users] 設定，請檢查設定檔。")
@@ -308,7 +314,7 @@ with tab2:
 
     cal = calendar(events=events,
                    options={"headerToolbar": {"left": "title", "right": "dayGridMonth,listMonth,prev,next"},
-                            "initialView": "dayGridMonth"}, callbacks=['eventClick'], key="cal_v2")
+                            "initialView": "dayGridMonth"}, callbacks=['eventClick'], key="cal_v_final")
     if cal.get("eventClick"):
         cid = int(cal["eventClick"]["event"]["id"])
         if st.session_state.edit_session_id != cid:
