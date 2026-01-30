@@ -13,7 +13,35 @@ from googleapiclient.discovery import build
 # 1. 系統設定與 Google 服務連線
 # ==========================================
 st.set_page_config(page_title="家教排課系統", page_icon="📅", layout="centered")
+# 👇👇👇 診斷程式碼開始 👇👇👇
+st.write("--- 🩺 Google 日曆連線診斷中 ---")
 
+# 1. 檢查 Service 變數是否存在
+if 'service' in globals() and service is not None:
+    st.write("✅ 程式碼已成功建立 service 物件 (鑰匙正確)")
+
+    # 2. 嘗試呼叫 Google 測試連線
+    try:
+        # 試著讀取日曆清單
+        calendar_list = service.calendarList().list().execute()
+        primary_cal = next((c for c in calendar_list['items'] if c.get('primary')), None)
+
+        if primary_cal:
+            st.success(f"🎉 連線成功！已連接到日曆：{primary_cal['summary']} (權限: {primary_cal['accessRole']})")
+            if primary_cal['accessRole'] != 'owner' and primary_cal['accessRole'] != 'writer':
+                st.error("⚠️ 警告：機器人權限不足！請去 Google 日曆設定改成「變更活動 (Make changes)」")
+        else:
+            st.warning("❓ 連線成功，但找不到主要日曆？")
+
+    except Exception as e:
+        st.error(f"❌ 雖然有鑰匙，但無法連線 Google。原因：{e}")
+        st.info("💡 請檢查：是否已在 Google 日曆設定中，把日曆「共用」給機器人 Email？")
+
+else:
+    st.error("❌ 程式碼沒有建立 service 物件。請檢查 Secrets 設定或 requirements.txt")
+
+st.write("--------------------------------")
+# 👆👆👆 診斷程式碼結束 👆👆👆
 # --- 設定 Google API 範圍 ---
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
