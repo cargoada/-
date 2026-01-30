@@ -20,56 +20,88 @@ SCOPES = [
     'https://www.googleapis.com/auth/calendar'
 ]
 
-# --- 啟動 Google 日曆機器人 (Service) ---
+# --- 啟動 Google 日曆機器人 ---
 service = None
 try:
-    # 指定讀取 [connections.gsheets]
     if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
         creds_dict = dict(st.secrets["connections"]["gsheets"])
         creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
         service = build('calendar', 'v3', credentials=creds)
     else:
-        st.warning("⚠️ 未偵測到 [connections.gsheets] 設定，日曆功能將停用。")
+        st.warning("⚠️ 未偵測到 [connections.gsheets]，日曆功能停用。")
 except Exception as e:
     print(f"Google 日曆連線失敗: {e}")
 
-# --- 多使用者切換邏輯 (修正版) ---
-st.sidebar.header("👤 使用者切換")
+# ==========================================
+# 2. 登入系統 (新增功能 ✨)
+# ==========================================
+
+# 初始化登入狀態
+if 'current_user' not in st.session_state:
+    st.session_state.current_user = None
+
+# --- A. 如果還沒登入，顯示登入畫面 ---
+if st.session_state.current_user is None:
+    st.title("👋 歡迎使用排課系統")
+    st.markdown("請先選擇您的身分以載入資料：")
+
+    try:
+        if "users" in st.secrets:
+            # 讀取使用者名單
+            user_dict = st.secrets["users"]
+            user_list = list(user_dict.keys())
+
+            # 選擇框 (稍微美化一下版面)
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_login = st.selectbox("請選擇身分", user_list, label_visibility="collapsed")
+            with col2:
+                if st.button("🚀 進入系統", type="primary"):
+                    st.session_state.current_user = selected_login
+                    st.rerun()  # 重新整理，進入主畫面
+        else:
+            st.error("❌ Secrets 設定檔找不到 [users] 區塊")
+    except Exception as e:
+        st.error(f"讀取使用者失敗: {e}")
+
+    st.stop()  # ⛔ 程式到這裡停止，不執行下面的內容
+
+# --- B. 如果已登入，設定連線網址 ---
+# 取得目前使用者的網址
 try:
-    if "users" in st.secrets:
-        # 1. 取得使用者資料
-        user_dict = st.secrets["users"]
-        user_list = list(user_dict.keys())
-
-        # 2. 讓用戶選擇
-        selected_user = st.sidebar.selectbox("請選擇使用者", user_list, key="user_selector")
-
-        # 3. 直接讀取網址 (解決 string indices 錯誤)
-        CURRENT_SHEET_URL = user_dict[selected_user]
-
-        st.sidebar.success(f"目前身分：{selected_user}")
-    else:
-        st.error("❌ Secrets 中找不到 [users] 設定，請檢查設定檔。")
-        st.stop()
-except Exception as e:
-    st.error(f"使用者讀取失敗: {e}")
-    st.stop()
+    CURRENT_USER = st.session_state.current_user
+    CURRENT_SHEET_URL = st.secrets["users"][CURRENT_USER]
+except:
+    st.error("讀取網址錯誤，請重新登入")
+    st.session_state.current_user = None
+    st.rerun()
 
 # 設定 Google Sheet 連線
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# ==========================================
+# 3. 側邊欄 (顯示身分與登出)
+# ==========================================
+with st.sidebar:
+    st.header(f"👤 您好，{CURRENT_USER}")
+    st.caption("已連接至您的專屬資料庫")
+
+    if st.button("🚪 登出 / 切換身分"):
+        st.session_state.current_user = None
+        st.cache_data.clear()  # 登出時順便清快取，避免資料混亂
+        st.rerun()
+
 
 # ==========================================
-# 2. 小幫手函式 (資料庫與日曆操作)
+# 4. 小幫手函式 (資料庫與日曆操作)
 # ==========================================
 
 def get_data(worksheet_name):
-    """讀取資料 (快取 10 分鐘防止 429 錯誤)"""
+    """讀取資料 (快取 10 分鐘)"""
     try:
-        # ttl=600 秒 (10分鐘)
         df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=600)
 
-        # 強制型別轉換 (防呆)
+        # 強制型別轉換
         if worksheet_name == 'students':
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
             df['default_rate'] = pd.to_numeric(df['default_rate'], errors='coerce').fillna(0).astype(int)
@@ -77,7 +109,6 @@ def get_data(worksheet_name):
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
             df['student_id'] = pd.to_numeric(df['student_id'], errors='coerce').fillna(0).astype(int)
             df['actual_rate'] = pd.to_numeric(df['actual_rate'], errors='coerce').fillna(0).astype(int)
-            # 確保必要欄位存在
             if 'google_event_id' not in df.columns: df['google_event_id'] = ""
             if 'progress' not in df.columns: df['progress'] = ""
             df['progress'] = df['progress'].fillna("").astype(str)
@@ -107,7 +138,7 @@ def get_next_id(df):
     return int(pd.to_numeric(df['id'], errors='coerce').max()) + 1
 
 
-# --- Google 日曆操作 (強制台灣時區) ---
+# --- Google 日曆操作 ---
 def create_google_event(title, start_dt, end_dt):
     if service is None: return None
     try:
@@ -147,7 +178,7 @@ def delete_google_event(event_id):
 
 
 # ==========================================
-# 3. 主程式介面
+# 5. 主程式介面
 # ==========================================
 
 if 'edit_session_id' not in st.session_state: st.session_state.edit_session_id = None
@@ -182,7 +213,7 @@ with tab1:
     else:
         st.info("尚無資料，請先排課")
 
-# ================= Tab 2: 排課 (核心功能) =================
+# ================= Tab 2: 排課 =================
 with tab2:
     df_stu = get_data("students")
     df_sess = get_data("sessions")
@@ -273,13 +304,11 @@ with tab2:
     c_cal.subheader("🗓️ 行事曆")
     if c_ref.button("重整"): st.rerun()
 
-    # 診斷按鈕
     with st.expander("🛠️ 點此修復漏掉的日曆"):
         if st.button("🔍 掃描並補建"):
             count = 0
             if not df_sess.empty:
                 for idx, row in df_sess.iterrows():
-                    # 邏輯：未來課程 + 沒有 ID
                     if (pd.isna(row['google_event_id']) or row['google_event_id'] == "") and row[
                         'start_time'] > datetime.now().isoformat():
                         sid = int(row['student_id'])
@@ -298,7 +327,6 @@ with tab2:
                 else:
                     st.info("檢查完畢，沒有發現漏掉的日曆。")
 
-    # 顯示日曆
     events = []
     if not df_sess.empty and not df_stu.empty:
         try:
@@ -314,7 +342,7 @@ with tab2:
 
     cal = calendar(events=events,
                    options={"headerToolbar": {"left": "title", "right": "dayGridMonth,listMonth,prev,next"},
-                            "initialView": "dayGridMonth"}, callbacks=['eventClick'], key="cal_v_final")
+                            "initialView": "dayGridMonth"}, callbacks=['eventClick'], key="cal_v_login")
     if cal.get("eventClick"):
         cid = int(cal["eventClick"]["event"]["id"])
         if st.session_state.edit_session_id != cid:
@@ -345,7 +373,7 @@ with tab2:
                         update_data("sessions", df_sess)
                         st.rerun()
 
-# ================= Tab 3: 帳單 (詳細版) =================
+# ================= Tab 3: 帳單 =================
 with tab3:
     st.subheader("💰 帳單中心")
     df_inv = get_data("invoices")
@@ -386,7 +414,6 @@ with tab3:
         else:
             st.info("沒有未結算的課程")
 
-    # 顯示帳單與明細
     if not df_inv.empty:
         unpaid = df_inv[df_inv['is_paid'] == 0]
         if not unpaid.empty:
@@ -403,7 +430,6 @@ with tab3:
                         update_data("invoices", df_inv)
                         st.rerun()
 
-                    # 明細展開
                     with st.expander("📄 查看明細 / 下載 Excel"):
                         details_mask = (pd.to_numeric(df_sess['invoice_id'], errors='coerce') == inv_id)
                         my_details = df_sess[details_mask].copy()
