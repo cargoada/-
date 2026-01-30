@@ -10,35 +10,42 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 # ==========================================
-# 1. 系統設定與 Google 服務連線
+# 1. 系統設定與 Google 服務連線 (指定讀取版)
 # ==========================================
 st.set_page_config(page_title="家教排課系統", page_icon="📅", layout="centered")
-# 👇👇👇 診斷程式碼開始 👇👇👇
-st.write("--- 🩺 Google 日曆連線診斷中 ---")
 
-# 1. 檢查 Service 變數是否存在
-if 'service' in globals() and service is not None:
-    st.write("✅ 程式碼已成功建立 service 物件 (鑰匙正確)")
+# 設定權限
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/calendar'
+]
 
-    # 2. 嘗試呼叫 Google 測試連線
-    try:
-        # 試著讀取日曆清單
-        calendar_list = service.calendarList().list().execute()
-        primary_cal = next((c for c in calendar_list['items'] if c.get('primary')), None)
+# 初始化變數
+service = None
 
-        if primary_cal:
-            st.success(f"🎉 連線成功！已連接到日曆：{primary_cal['summary']} (權限: {primary_cal['accessRole']})")
-            if primary_cal['accessRole'] != 'owner' and primary_cal['accessRole'] != 'writer':
-                st.error("⚠️ 警告：機器人權限不足！請去 Google 日曆設定改成「變更活動 (Make changes)」")
-        else:
-            st.warning("❓ 連線成功，但找不到主要日曆？")
+try:
+    # 🔍 除錯訊息：讓你知道程式正在看哪裡
+    # st.write("正在嘗試讀取 secrets...")
 
-    except Exception as e:
-        st.error(f"❌ 雖然有鑰匙，但無法連線 Google。原因：{e}")
-        st.info("💡 請檢查：是否已在 Google 日曆設定中，把日曆「共用」給機器人 Email？")
+    # 🔥 關鍵修改：直接指定讀取 [connections.gsheets]
+    # 這對應到你在 Secrets 裡面的第一行標題
+    if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+        creds_dict = dict(st.secrets["connections"]["gsheets"])
 
-else:
-    st.error("❌ 程式碼沒有建立 service 物件。請檢查 Secrets 設定或 requirements.txt")
+        # 建立憑證
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=SCOPES
+        )
+
+        # 啟動日曆機器人
+        service = build('calendar', 'v3', credentials=creds)
+        # st.success("✅ Google 日曆連線成功！")
+
+    else:
+        st.error("❌ Secrets 格式錯誤！請確認標題是 [connections.gsheets]")
+
+except Exception as e:
+    st.error(f"❌ 連線發生錯誤: {e}")
 
 st.write("--------------------------------")
 # 👆👆👆 診斷程式碼結束 👆👆👆
