@@ -135,10 +135,13 @@ def get_data(worksheet_name):
         elif worksheet_name == 'sessions':
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
             df['student_id'] = pd.to_numeric(df['student_id'], errors='coerce').fillna(0).astype(int)
-            # invoice_id 允許是空值 (Int64)
             df['invoice_id'] = pd.to_numeric(df['invoice_id'], errors='coerce').astype('Int64')
             df['actual_rate'] = pd.to_numeric(df['actual_rate'], errors='coerce').fillna(0).astype(int)
             if 'google_event_id' not in df.columns: df['google_event_id'] = ""
+
+            # 👇 新增這兩行：處理進度欄位 (如果沒填就是空字串)
+            if 'progress' not in df.columns: df['progress'] = ""
+            df['progress'] = df['progress'].fillna("").astype(str)
 
         elif worksheet_name == 'invoices':
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
@@ -207,39 +210,18 @@ with tab1:
         st.write("連線中...")
 
 # ==========================================
-# Tab 2: 📅 排課 (點擊日曆可編輯)
+# Tab 2: 📅 排課 (含課程進度紀錄)
 # ==========================================
 with tab2:
+    # 1. 讀取資料
     df_stu = get_data("students")
     df_sess = get_data("sessions")
     student_map = dict(zip(df_stu['name'], df_stu['id'])) if not df_stu.empty else {}
 
-    # --- 1. 處理日曆事件資料 (這段移到最前面，為了讓點擊能馬上反應) ---
-    events = []
-    if not df_sess.empty and not df_stu.empty:
-        # 合併資料表，保留 session 的 id
-        # id_x = session_id (課程ID), id_y = student_id (學生ID)
-        merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
-
-        for _, row in merged.iterrows():
-            events.append({
-                "id": str(row['id_x']),  # 關鍵！把課程 ID 埋進去
-                "title": row['name'],
-                "start": row['start_time'],
-                "end": row['end_time'],
-                "backgroundColor": row['color'],
-                "borderColor": row['color'],
-                # 設定游標變成手指，暗示可點擊
-                "classNames": ["cursor-pointer"]
-            })
-
-    # --- 2. 判斷現在是「新增」還是「編輯」模式 ---
-    # 如果 Session State 裡有 ID，代表現在要編輯
+    # --- 2. 編輯模式 ---
     if st.session_state.edit_session_id:
-        st.subheader("✏️ 編輯課程")
+        st.subheader("✏️ 編輯課程 / 紀錄進度")
         edit_id = st.session_state.edit_session_id
-
-        # 找出這堂課的資料
         row = df_sess[df_sess['id'] == edit_id]
 
         if not row.empty:
@@ -247,22 +229,24 @@ with tab2:
             s_dt = pd.to_datetime(row['start_time'])
             e_dt = pd.to_datetime(row['end_time'])
             current_sid = int(row['student_id'])
-
-            # 找出學生名字
             s_name = df_stu[df_stu['id'] == current_sid]['name'].values[0] if current_sid in df_stu['id'].values else ""
+            # 讀取原本的進度 (如果有的話)
+            old_progress = row['progress'] if 'progress' in row else ""
 
             with st.container(border=True):
-                st.info(f"正在修改：{s_name} 的課程")
                 c1, c2 = st.columns(2)
-                # 預設選中該學生
-                edit_stu = c1.selectbox("學生", list(student_map.keys()),
-                                        index=list(student_map.keys()).index(s_name) if s_name in student_map else 0)
+                s_idx = list(student_map.keys()).index(s_name) if s_name in student_map else 0
+                edit_stu = c1.selectbox("學生", list(student_map.keys()), index=s_idx)
                 edit_date = c2.date_input("日期", s_dt.date())
 
                 c3, c4 = st.columns(2)
                 edit_time = c3.time_input("時間", s_dt.time())
                 old_dur = (e_dt - s_dt).total_seconds() / 3600
                 edit_dur = c4.slider("時數", 0.5, 3.0, float(old_dur), 0.5)
+
+                # 👇 新增：進度輸入框 (用 text_area 可以換行寫比較多)
+                edit_progress = st.text_area("📖 當日進度 / 聯絡簿", value=old_progress,
+                                             placeholder="例如：數學 Ch3-2, 作業 p.45")
 
                 new_start = datetime.combine(edit_date, edit_time)
                 new_end = new_start + timedelta(hours=edit_dur)
@@ -280,27 +264,33 @@ with tab2:
                         df_sess.loc[idx, 'end_time'] = new_end.strftime('%Y-%m-%dT%H:%M:%S')
                         df_sess.loc[idx, 'status'] = status
                         df_sess.loc[idx, 'actual_rate'] = rate
+                        # 儲存進度
+                        df_sess.loc[idx, 'progress'] = edit_progress
 
-                        # 同步更新 Google 日曆
                         g_event_id = row['google_event_id'] if 'google_event_id' in row and pd.notna(
                             row['google_event_id']) else None
-                        if g_event_id: update_google_event(g_event_id, f"家教: {edit_stu}", new_start, new_end)
+                        # 更新 Google 日曆時，把進度也寫在描述裡 (description)
+                        desc = f"進度：{edit_progress}" if edit_progress else ""
+                        if g_event_id:
+                            # 注意：這裡需要去修改 update_google_event 函式才能支援描述，目前先維持原樣
+                            update_google_event(g_event_id, f"家教: {edit_stu}", new_start, new_end)
 
                         update_data("sessions", df_sess)
                         st.session_state.edit_session_id = None
                         st.toast("修改成功！", icon="✅")
                         st.rerun()
                 with col_cancel:
-                    if st.button("❌ 取消 / 返回新增"):
+                    if st.button("❌ 取消"):
                         st.session_state.edit_session_id = None
                         st.rerun()
         else:
-            st.warning("找不到這堂課資料，可能已被刪除。")
-            st.session_state.edit_session_id = None
-            if st.button("返回"): st.rerun()
+            st.warning("查無此課程")
+            if st.button("返回"):
+                st.session_state.edit_session_id = None
+                st.rerun()
 
     else:
-        # --- 新增模式 (平常看到的樣子) ---
+        # --- ➕ 新增模式 ---
         st.subheader("➕ 快速記課")
         with st.container(border=True):
             if not df_stu.empty:
@@ -312,6 +302,9 @@ with tab2:
                 t_input = c3.time_input("開始", datetime.now().replace(minute=0, second=0))
                 dur = c4.slider("時數", 0.5, 3.0, 1.5, 0.5)
 
+                # 👇 新增：進度輸入框
+                n_progress = st.text_area("📖 預定進度 / 備註 (選填)", height=68, placeholder="可先填寫預計要教什麼...")
+
                 if st.button("✅ 確認新增", type="primary"):
                     start_p = datetime.combine(d_input, t_input)
                     end_p = start_p + timedelta(hours=dur)
@@ -319,7 +312,6 @@ with tab2:
                     rate = int(df_stu[df_stu['id'] == sid]['default_rate'].values[0])
                     status = '已完成' if start_p < datetime.now() else '已預約'
 
-                    # Google 日曆同步
                     g_event_id = create_google_event(f"家教: {sel_stu}", start_p, end_p)
 
                     new_id = get_next_id(df_sess)
@@ -328,7 +320,8 @@ with tab2:
                         'start_time': start_p.strftime('%Y-%m-%dT%H:%M:%S'),
                         'end_time': end_p.strftime('%Y-%m-%dT%H:%M:%S'),
                         'status': status, 'actual_rate': rate, 'invoice_id': None,
-                        'google_event_id': g_event_id
+                        'google_event_id': g_event_id,
+                        'progress': n_progress  # 存入進度
                     }])
 
                     df_sess = pd.concat([df_sess, new_row], ignore_index=True)
@@ -340,26 +333,32 @@ with tab2:
 
     st.divider()
 
-    # --- 3. 顯示日曆 (修改版：沒資料也要顯示) ---
-    st.subheader("🗓️ 課程行事曆 (點擊課程可編輯)")
+    # --- 3. 顯示日曆 ---
+    c_cal, c_refresh = st.columns([4, 1])
+    c_cal.subheader("🗓️ 課程行事曆")
+    if c_refresh.button("🔄 重新整理"):
+        st.cache_data.clear()
+        st.rerun()
 
-    # 準備事件資料
     events = []
-    # 只有當有資料時才去跑迴圈，不然就是空的列表
     if not df_sess.empty and not df_stu.empty:
-        merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
-        for _, row in merged.iterrows():
-            events.append({
-                "id": str(row['id_x']),
-                "title": row['name'],
-                "start": row['start_time'],
-                "end": row['end_time'],
-                "backgroundColor": row['color'],
-                "borderColor": row['color'],
-                "classNames": ["cursor-pointer"]
-            })
+        try:
+            merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
+            for _, row in merged.iterrows():
+                # 如果有進度，顯示在標題上，或是只顯示名字
+                title_text = row['name']
+                events.append({
+                    "id": str(row['id_x']),
+                    "title": title_text,
+                    "start": row['start_time'],
+                    "end": row['end_time'],
+                    "backgroundColor": row['color'],
+                    "borderColor": row['color'],
+                    "classNames": ["cursor-pointer"]
+                })
+        except Exception as e:
+            st.error("日曆讀取錯誤")
 
-    # 設定日曆選項
     calendar_options = {
         "headerToolbar": {"left": "today prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek"},
         "initialView": "dayGridMonth",
@@ -368,27 +367,18 @@ with tab2:
         "selectable": True,
     }
 
-    # 👇 關鍵修改：加上 key="my_calendar"，確保點擊反應靈敏
-    cal = calendar(
-        events=events,
-        options=calendar_options,
-        callbacks=['eventClick'],
-        key="my_calendar"
-    )
+    cal = calendar(events=events, options=calendar_options, callbacks=['eventClick'], key="main_calendar")
 
-    # --- 4. 監聽點擊事件 ---
     if cal.get("eventClick"):
         clicked_event = cal["eventClick"]["event"]
         clicked_id = int(clicked_event["id"])
-
-        # 如果點擊的跟現在的不一樣，才重新整理
         if st.session_state.edit_session_id != clicked_id:
             st.session_state.edit_session_id = clicked_id
-            st.toast(f"已選取課程，請至上方編輯", icon="👆")  # 跳出提示告訴你要往上看
+            st.toast("👆 已選取，請至上方編輯進度")
             time.sleep(0.5)
             st.rerun()
 
-    # --- 5. 列表模式 ---
+    # --- 5. 列表模式 (顯示進度) ---
     with st.expander("📋 詳細列表 / 刪除"):
         if not df_sess.empty:
             df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
@@ -398,10 +388,16 @@ with tab2:
                 sess_id = row['id_x']
                 name = row['name']
                 t_str = pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')
+                # 讀取進度
+                prog = row['progress'] if 'progress' in row and pd.notna(row['progress']) else ""
 
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([5, 1.5, 1.5])
                     c1.markdown(f"**{name}** - {t_str}")
+                    # 👇 如果有寫進度，就顯示出來
+                    if prog:
+                        c1.caption(f"📖 {prog}")
+
                     if c2.button("✏️", key=f"ed_{sess_id}"):
                         st.session_state.edit_session_id = sess_id
                         st.rerun()
@@ -410,7 +406,6 @@ with tab2:
                             delete_google_event(row['google_event_id'])
                         df_sess = df_sess[df_sess['id'] != sess_id]
                         update_data("sessions", df_sess)
-                        st.toast("已刪除", icon="🗑️")
                         st.rerun()
 # ==========================================
 # Tab 3: 💰 帳單中心 (詳細明細版)
