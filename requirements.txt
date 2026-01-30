@@ -1,6 +1,6 @@
 streamlit
 pandas
-streamlit-calendar
 st-gsheets-connection
-google-api-python-client
-google-auth
+google-api-python-client  <-- 這行負責跟日曆講話
+google-auth               <-- 這行負責拿鑰匙
+streamlit-calendar        <-- 這行負責畫日曆
