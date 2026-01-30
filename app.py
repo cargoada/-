@@ -374,7 +374,66 @@ with tab2:
                 st.warning("請先到「學生」分頁新增學生資料！")
 
     st.divider()
+    # 👇👇👇 請插入這段「智慧修復區塊」 👇👇👇
+    with st.expander("🛠️ 日曆連線診斷與修復", expanded=False):
+        st.caption("如果發現有些課程沒出現在 Google 日曆上，請按下方按鈕進行檢查。")
 
+        if st.button("🔍 掃描並修復所有漏掉的日曆", type="primary"):
+            # 1. 讀取最新資料
+            df_fix = get_data("sessions")
+            df_stu_fix = get_data("students")
+
+            # 2. 找出「未來」且「還沒取消」的課程
+            # 條件：狀態不是「已完成」 (簡單判斷：只要還沒上完的都檢查)
+            # 並且 google_event_id 是空的 (代表漏掉了)
+
+            # 先確保欄位存在
+            if 'google_event_id' not in df_fix.columns:
+                df_fix['google_event_id'] = ""
+
+            # 篩選出問題課程：(未來課程) AND (沒有 ID 或 ID 是空的)
+            now_str = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+            mask_missing = (df_fix['start_time'] > now_str) & \
+                           ((df_fix['google_event_id'].isna()) | (df_fix['google_event_id'] == ""))
+
+            missing_count = mask_missing.sum()
+
+            if missing_count == 0:
+                st.success("🎉 太棒了！檢查完畢，所有未來課程都已經連接日曆，沒有漏掉的！")
+            else:
+                st.warning(f"⚠️ 發現 {missing_count} 筆課程漏掉日曆，正在自動補建中...")
+                progress_bar = st.progress(0)
+
+                # 準備修復
+                # 建立臨時的 ID 對照表方便查找學生名字
+                stu_map = dict(zip(df_stu_fix['id'], df_stu_fix['name']))
+
+                # 逐筆修復
+                fixed_rows = df_fix[mask_missing].index
+                for i, idx in enumerate(fixed_rows):
+                    row = df_fix.loc[idx]
+                    sid = int(row['student_id'])
+                    s_name = stu_map.get(sid, "未知學生")
+
+                    s_dt = pd.to_datetime(row['start_time'])
+                    e_dt = pd.to_datetime(row['end_time'])
+
+                    # 呼叫 API 補建日曆
+                    new_eid = create_google_event(f"家教: {s_name}", s_dt, e_dt)
+
+                    if new_eid:
+                        # 把新 ID 寫回資料表
+                        df_fix.loc[idx, 'google_event_id'] = new_eid
+
+                    # 更新進度條
+                    progress_bar.progress((i + 1) / missing_count)
+
+                # 最後一次性存檔
+                update_data("sessions", df_fix)
+                st.success(f"✅ 成功修復 {missing_count} 筆日曆！請查看 Google 日曆。")
+                time.sleep(2)
+                st.rerun()
+    # 👆👆👆 插入結束 👆👆👆
     # --- 3. 顯示日曆 (獨立區塊，確保永遠顯示) ---
     c_cal, c_refresh = st.columns([4, 1])
     c_cal.subheader("🗓️ 課程行事曆")
