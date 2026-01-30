@@ -83,7 +83,7 @@ def get_calendar_service():
 
 
 # ==========================================
-# Google Calendar 小幫手函式 (時區修正版)
+# Google Calendar 小幫手函式 (修正變數名稱版)
 # ==========================================
 def create_google_event(title, start_dt, end_dt):
     """建立 Google 日曆事件 (強制指定台灣時區)"""
@@ -91,19 +91,21 @@ def create_google_event(title, start_dt, end_dt):
         event_body = {
             'summary': title,
             'start': {
-                # 轉成 ISO 格式，並不帶時區資訊 (讓 timeZone 參數去決定)
                 'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                'timeZone': 'Asia/Taipei',  # 👈 關鍵：強制指定台北時間
+                'timeZone': 'Asia/Taipei',  # 強制台北時間
             },
             'end': {
                 'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                'timeZone': 'Asia/Taipei',  # 👈 關鍵：強制指定台北時間
+                'timeZone': 'Asia/Taipei',  # 強制台北時間
             },
         }
-        # 呼叫 API
-        event = calendar_api.create_event(calendar_id='primary', event_body=event_body)
+
+        # 👇 這裡改成用 service
+        # 如果你的程式碼裡，日曆機器人不叫 service (例如叫 gc 或 c)，請改這裡
+        event = service.events().insert(calendarId='primary', body=event_body).execute()
         return event.get('id')
     except Exception as e:
+        # 這裡用 st.error 讓你知道錯在哪 (如果 service 沒定義，這裡會告訴你)
         st.error(f"日曆建立失敗：{e}")
         return None
 
@@ -111,38 +113,31 @@ def create_google_event(title, start_dt, end_dt):
 def update_google_event(event_id, title, start_dt, end_dt):
     """更新 Google 日曆事件"""
     try:
-        # 1. 先讀取舊的事件 (為了保留原本的描述或其他欄位)
-        # 注意：generic_calendar 工具沒有 read_event，我們直接用 modify 覆蓋
-
         event_body = {
             'summary': title,
             'start': {
                 'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                'timeZone': 'Asia/Taipei',  # 👈 這裡也要加
+                'timeZone': 'Asia/Taipei',
             },
             'end': {
                 'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                'timeZone': 'Asia/Taipei',  # 👈 這裡也要加
+                'timeZone': 'Asia/Taipei',
             },
         }
 
-        # 呼叫 API 更新
-        calendar_api.update_event(
-            calendar_id='primary',
-            event_id=event_id,
-            event_body=event_body
-        )
+        # 👇 這裡改成用 service
+        service.events().update(calendarId='primary', eventId=event_id, body=event_body).execute()
         return True
     except Exception as e:
-        # 如果找不到事件 (可能被手動刪了)，印出警告但不讓程式當機
-        print(f"日曆更新失敗 (可能已刪除): {e}")
+        print(f"日曆更新失敗: {e}")
         return False
 
 
 def delete_google_event(event_id):
     """刪除 Google 日曆事件"""
     try:
-        calendar_api.delete_event(calendar_id='primary', event_id=event_id)
+        # 👇 這裡改成用 service
+        service.events().delete(calendarId='primary', eventId=event_id).execute()
         return True
     except Exception as e:
         print(f"日曆刪除失敗: {e}")
