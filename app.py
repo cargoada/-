@@ -335,32 +335,55 @@ with tab2:
 
     st.divider()
 
-    # --- 3. 顯示日曆 (加入點擊監聽) ---
-    st.subheader("🗓️ 課程行事曆 (點擊可編輯)")
+    # --- 3. 顯示日曆 (修改版：沒資料也要顯示) ---
+    st.subheader("🗓️ 課程行事曆 (點擊課程可編輯)")
 
+    # 準備事件資料
+    events = []
+    # 只有當有資料時才去跑迴圈，不然就是空的列表
+    if not df_sess.empty and not df_stu.empty:
+        merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
+        for _, row in merged.iterrows():
+            events.append({
+                "id": str(row['id_x']),
+                "title": row['name'],
+                "start": row['start_time'],
+                "end": row['end_time'],
+                "backgroundColor": row['color'],
+                "borderColor": row['color'],
+                "classNames": ["cursor-pointer"]
+            })
+
+    # 設定日曆選項
     calendar_options = {
         "headerToolbar": {"left": "today prev,next", "center": "title", "right": "dayGridMonth,timeGridWeek"},
         "initialView": "dayGridMonth",
         "timeZone": "local",
         "locale": "zh-tw",
-        "selectable": True,  # 允許選取
+        "selectable": True,
     }
 
-    # 這裡加上 callbacks=['eventClick'] 讓它能回傳點擊事件
-    cal = calendar(events=events, options=calendar_options, callbacks=['eventClick'])
+    # 👇 關鍵修改：加上 key="my_calendar"，確保點擊反應靈敏
+    cal = calendar(
+        events=events,
+        options=calendar_options,
+        callbacks=['eventClick'],
+        key="my_calendar"
+    )
 
     # --- 4. 監聽點擊事件 ---
-    # 如果使用者點了日曆上的某一堂課
     if cal.get("eventClick"):
         clicked_event = cal["eventClick"]["event"]
         clicked_id = int(clicked_event["id"])
 
-        # 如果點擊的 ID 跟現在正在編輯的不一樣，就切換過去
+        # 如果點擊的跟現在的不一樣，才重新整理
         if st.session_state.edit_session_id != clicked_id:
             st.session_state.edit_session_id = clicked_id
-            st.rerun()  # 重新整理頁面，上面的表單就會變成「編輯模式」
+            st.toast(f"已選取課程，請至上方編輯", icon="👆")  # 跳出提示告訴你要往上看
+            time.sleep(0.5)
+            st.rerun()
 
-    # --- 5. 列表模式 (保留給習慣看列表的人) ---
+    # --- 5. 列表模式 ---
     with st.expander("📋 詳細列表 / 刪除"):
         if not df_sess.empty:
             df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
@@ -374,16 +397,12 @@ with tab2:
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([5, 1.5, 1.5])
                     c1.markdown(f"**{name}** - {t_str}")
-
-                    # 編輯按鈕 (功能跟點日曆一樣)
                     if c2.button("✏️", key=f"ed_{sess_id}"):
                         st.session_state.edit_session_id = sess_id
                         st.rerun()
-
                     if c3.button("🗑️", key=f"del_{sess_id}"):
                         if 'google_event_id' in row and pd.notna(row['google_event_id']):
                             delete_google_event(row['google_event_id'])
-
                         df_sess = df_sess[df_sess['id'] != sess_id]
                         update_data("sessions", df_sess)
                         st.toast("已刪除", icon="🗑️")
