@@ -185,30 +185,82 @@ tab1, tab2, tab3, tab4 = st.tabs(["🏠 概況", "📅 排課", "💰 帳單", "
 # 為了篇幅，我保留核心邏輯，直接貼上整合好的部分：
 
 # ==========================================
-# Tab 1: 🏠 概況
+# Tab 1: 🏠 概況 (加入刷新功能)
 # ==========================================
 with tab1:
-    st.subheader("📊 本月速覽")
+    # 使用 columns 讓標題和按鈕排在同一排
+    c_title, c_refresh = st.columns([3, 1.5])
+
+    c_title.subheader("📊 本月速覽")
+
+    # 👇 新增這個按鈕：強制清除快取，重新抓資料
+    if c_refresh.button("🔄 刷新數據"):
+        st.cache_data.clear()
+        st.toast("正在同步最新資料...", icon="☁️")
+        st.rerun()
+
     try:
+        # 讀取資料
         df_sess = get_data("sessions")
-        pending = df_sess[
-            (df_sess['status'] == '已完成') & ((df_sess['invoice_id'].isna()) | (df_sess['invoice_id'] == 0))]
-        count = len(pending)
-        total_income = 0
-        for _, row in pending.iterrows():
+
+        # 1. 計算待結算 (已經上完課，但還沒開發票)
+        # 條件：狀態是「已完成」 且 (invoice_id 是空的 或 0)
+        pending_mask = (df_sess['status'] == '已完成') & (df_sess['invoice_id'].fillna(0) == 0)
+        pending_sessions = df_sess[pending_mask]
+
+        pending_count = len(pending_sessions)
+        pending_income = 0
+
+        for _, row in pending_sessions.iterrows():
             try:
+                # 確保時間格式正確
                 s = pd.to_datetime(row['start_time'])
                 e = pd.to_datetime(row['end_time'])
                 h = (e - s).total_seconds() / 3600
-                total_income += h * row['actual_rate']
+                # 確保費率是數字
+                rate = int(row['actual_rate']) if pd.notna(row['actual_rate']) else 0
+                pending_income += h * rate
             except:
                 pass
-        c1, c2 = st.columns(2)
-        c1.metric("待結算堂數", f"{count}", delta="堂", delta_color="off")
-        c2.metric("待收學費", f"${int(total_income):,}")
-    except:
-        st.write("連線中...")
 
+        # 2. 計算本月已預約 (還沒上課的)
+        # 條件：狀態是「已預約」
+        # (這裡簡單抓所有已預約的，你也可以改成只抓本月的)
+        future_mask = (df_sess['status'] == '已預約')
+        future_count = len(df_sess[future_mask])
+
+        # --- 顯示數據卡片 ---
+        st.markdown("### 💰 財務狀況")
+        col1, col2 = st.columns(2)
+
+        # 顯示卡片 1
+        col1.metric(
+            label="待結算金額 (已上完)",
+            value=f"${int(pending_income):,}",
+            delta=f"{pending_count} 堂課",
+            delta_color="normal"  # 綠色
+        )
+
+        # 顯示卡片 2
+        col2.metric(
+            label="未來預約 (未上課)",
+            value=f"{future_count} 堂",
+            delta="預排",
+            delta_color="off"  # 灰色
+        )
+
+    except Exception as e:
+        st.error(f"資料讀取錯誤: {e}")
+        st.write("請嘗試按上方的「刷新數據」按鈕")
+
+    st.divider()
+
+    # --- 提示區塊 ---
+    st.info("""
+    💡 **小知識：**
+    * 為了保護您的 Google 連線額度，**資料會每 10 分鐘自動更新一次**。
+    * 如果您剛新增完課程，想馬上看到最新金額，請按上方的 **「🔄 刷新數據」** 按鈕。
+    """)
 # ==========================================
 # Tab 2: 📅 排課 (含課程進度紀錄)
 # ==========================================
