@@ -1,156 +1,75 @@
 import streamlit as st
 import pandas as pd
-import time
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
-from streamlit_calendar import calendar
-# 👇👇👇 請把這段插入在 import 區塊的下方 👇👇👇
 
+# 👇👇👇 Google API 專用套件 👇👇👇
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# 1. 設定權限範圍 (同時包含日曆和試算表)
+# ==========================================
+# 1. Google 服務連線設定 (自動啟動機器人)
+# ==========================================
 SCOPES = [
-    'https://www.googleapis.com/auth/calendar',
-    'https://www.googleapis.com/auth/spreadsheets'
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/calendar'
 ]
 
-# 2. 從 Streamlit Secrets 讀取憑證
-# (這裡會嘗試抓取你原本設定給 Google Sheet 用的那組密碼)
+# 嘗試從 secrets 讀取憑證並建立 service 物件
 try:
+    # 判斷 secrets 格式 (相容兩種常見寫法)
     if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-        # 這是新版 Streamlit GSheets Connection 的預設位置
         creds_dict = dict(st.secrets["connections"]["gsheets"])
     elif "gcp_service_account" in st.secrets:
-        # 這是舊版或自訂名稱的位置
         creds_dict = dict(st.secrets["gcp_service_account"])
     else:
-        # 如果都沒找到，嘗試直接抓 users 裡面的設定 (視你的 secrets.toml 結構而定)
-        # 這裡假設至少有一組能用的 Service Account JSON
-        st.error("找不到 Google 憑證，請檢查 secrets.toml")
-        st.stop()
+        # 如果找不到，這裡會報錯
+        creds_dict = st.secrets["text_key"]  # 備用方案，視你的設定而定
 
-    # 3. 建立憑證物件
+    # 建立憑證
     creds = service_account.Credentials.from_service_account_info(
         creds_dict, scopes=SCOPES
     )
 
-    # 4. 關鍵：定義 service 變數 (這就是你的日曆機器人！)
+    # 🔥 關鍵：啟動 Google 日曆機器人 (service)
     service = build('calendar', 'v3', credentials=creds)
+    # print("Google 日曆連線成功！")
 
 except Exception as e:
-    st.error(f"無法連線 Google 服務：{e}")
-    # 為了避免程式當掉，這裡給一個空的 service，但功能會失效
+    # st.error(f"⚠️ Google 日曆連線失敗 (僅排課功能受影響)：{e}")
     service = None
 
-# 👆👆👆 插入結束 👆👆👆
-
-
-# --- 頁面設定 ---
-st.set_page_config(page_title="超級家教系統 (多人版)", page_icon="🏫", layout="centered")
-
-# --- CSS 美化 ---
-st.markdown("""
-    <style>
-    .stButton>button { width: 100%; border-radius: 12px; height: 3em; font-weight: bold; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- 🟢 初始化 Session State (記錄誰登入了) ---
-if 'current_user' not in st.session_state:
-    st.session_state.current_user = None
 
 # ==========================================
-# 🚪 登入畫面 (如果還沒登入，就只顯示這裡)
-# ==========================================
-if not st.session_state.current_user:
-    st.title("🏫 歡迎使用家教系統")
-    st.info("請選擇你的身份登入")
-
-    # 從 secrets 讀取使用者名單
-    users_config = st.secrets["users"]
-    user_keys = [k for k in users_config.keys() if k != "admin_password"]
-    user_names = [users_config[k]["name"] for k in user_keys]
-
-    with st.form("login_form"):
-        selected_name = st.selectbox("你是誰？", user_names)
-        password = st.text_input("輸入密碼", type="password")
-        submitted = st.form_submit_button("登入")
-
-        if submitted:
-            if password == users_config["admin_password"]:
-                # 找出對應的 key (例如 'jiong' 或 'friend')
-                selected_key = user_keys[user_names.index(selected_name)]
-                st.session_state.current_user = users_config[selected_key]
-                st.toast(f"歡迎回來，{selected_name}！", icon="👋")
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error("密碼錯誤！")
-
-    st.stop()  # ⛔ 停止執行下面的程式碼，直到登入成功
-
-# ==========================================
-# 👇 以下是登入後才會執行的主程式
-# ==========================================
-
-# 取得當前使用者的專屬設定
-USER_CONFIG = st.session_state.current_user
-CURRENT_SHEET_URL = USER_CONFIG["sheet_url"]
-CURRENT_CALENDAR_ID = USER_CONFIG["calendar_id"]
-
-st.title(f"☁️ {USER_CONFIG['name']}的家教系統")
-
-if st.button("登出", type="secondary"):
-    st.session_state.current_user = None
-    st.rerun()
-
-# --- 🟢 資料庫連線 (GSheets) ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-
-# --- 🟢 Google 日曆連線 ---
-def get_calendar_service():
-    try:
-        creds_info = st.secrets["connections"]["gsheets"]
-        creds = service_account.Credentials.from_service_account_info(
-            creds_info, scopes=['https://www.googleapis.com/auth/calendar']
-        )
-        return build('calendar', 'v3', credentials=creds)
-    except Exception as e:
-        return None
-
-
-# ==========================================
-# Google Calendar 小幫手函式 (修正變數名稱版)
+# 2. Google 日曆小幫手函式 (時區修正版)
 # ==========================================
 def create_google_event(title, start_dt, end_dt):
-    """建立 Google 日曆事件 (強制指定台灣時區)"""
+    """建立日曆事件 (回傳 event_id)"""
+    if service is None: return None  # 如果沒連線就直接跳過
+
     try:
         event_body = {
             'summary': title,
             'start': {
                 'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                'timeZone': 'Asia/Taipei',  # 強制台北時間
+                'timeZone': 'Asia/Taipei',  # 🇹🇼 強制台灣時間
             },
             'end': {
                 'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                'timeZone': 'Asia/Taipei',  # 強制台北時間
+                'timeZone': 'Asia/Taipei',
             },
         }
-
-        # 👇 這裡改成用 service
-        # 如果你的程式碼裡，日曆機器人不叫 service (例如叫 gc 或 c)，請改這裡
         event = service.events().insert(calendarId='primary', body=event_body).execute()
         return event.get('id')
     except Exception as e:
-        # 這裡用 st.error 讓你知道錯在哪 (如果 service 沒定義，這裡會告訴你)
-        st.error(f"日曆建立失敗：{e}")
+        st.toast(f"❌ 日曆建立失敗：{e}")
         return None
 
 
 def update_google_event(event_id, title, start_dt, end_dt):
-    """更新 Google 日曆事件"""
+    """更新日曆事件"""
+    if service is None or not event_id: return False
+
     try:
         event_body = {
             'summary': title,
@@ -163,8 +82,6 @@ def update_google_event(event_id, title, start_dt, end_dt):
                 'timeZone': 'Asia/Taipei',
             },
         }
-
-        # 👇 這裡改成用 service
         service.events().update(calendarId='primary', eventId=event_id, body=event_body).execute()
         return True
     except Exception as e:
@@ -173,9 +90,10 @@ def update_google_event(event_id, title, start_dt, end_dt):
 
 
 def delete_google_event(event_id):
-    """刪除 Google 日曆事件"""
+    """刪除日曆事件"""
+    if service is None or not event_id: return False
+
     try:
-        # 👇 這裡改成用 service
         service.events().delete(calendarId='primary', eventId=event_id).execute()
         return True
     except Exception as e:
@@ -183,6 +101,19 @@ def delete_google_event(event_id):
         return False
 
 
+# ==========================================
+# 3. Streamlit 頁面設定與資料庫連線
+# ==========================================
+st.set_page_config(page_title="家教排課系統", page_icon="📅", layout="centered")
+
+# 連接 Google Sheets
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# 設定你的試算表網址 (請確認這裡有換成你的網址)
+CURRENT_SHEET_URL = st.secrets["users"]["jiong"]["sheet_url"]
+
+
+# 👇👇👇 下面接著原本的 def get_data... 👇👇👇
 # --- 資料庫操作 (關鍵：要傳入 spreadsheet 參數) ---
 # 👇 找到原本的 get_data，整段換成這個
 def get_data(worksheet_name):
