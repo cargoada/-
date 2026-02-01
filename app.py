@@ -199,21 +199,40 @@ with tab2:
             pass
     calendar(events=events, options={"initialView": "dayGridMonth"}, key="cal_v_final")
 
-    # 列表刪除區
+    # --- C. 列表模式 (修復 KeyError 版) ---
     with st.expander("📋 詳細列表 / 刪除", expanded=True):
         if not df_sess.empty:
+            # 合併學生資料
             df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
                                                                                                     ascending=False).head(
                 20)
+
             for _, row in df_display.iterrows():
                 sid = int(row['id_x'])
-                connected = pd.notna(row['google_event_id']) and str(row['google_event_id']) != ""
+
+                # 🔥 修正重點：使用 .get() 來抓取，就算欄位不存在也不會報錯
+                gid = row.get('google_event_id', "")
+                connected = pd.notna(gid) and str(gid) != ""
+
                 with st.container(border=True):
                     c1, c2 = st.columns([5, 1])
-                    c1.markdown(f"**{row['name']}** - {pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')}")
-                    if connected: c1.caption("✅ 已同步日曆")
+                    # 顯示課程資訊
+                    time_str = pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')
+                    c1.markdown(f"**{row['name']}** - {time_str}")
+
+                    # 顯示連線狀態
+                    if connected:
+                        c1.caption("✅ 已同步日曆")
+                    else:
+                        c1.caption("⚠️ 未同步日曆")
+
+                    # 刪除按鈕
                     if c2.button("🗑️", key=f"d{sid}"):
-                        if connected: delete_google_event(row['google_event_id'])
+                        # 如果有連線，先刪除 Google 日曆上的活動
+                        if connected:
+                            delete_google_event(gid)
+
+                        # 再刪除資料庫裡的紀錄
                         df_sess = df_sess[df_sess['id'].astype(int) != sid]
                         update_data("sessions", df_sess)
                         st.rerun()
