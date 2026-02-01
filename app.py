@@ -95,32 +95,31 @@ def update_data(worksheet_name, df):
     st.cache_data.clear()
 
 
-# ==========================================
-# 請直接覆蓋 app.py 裡面的這三個函式
-# ==========================================
+# ======================================================
+# 1. 設定你的日曆信箱 (請修改這裡！)
+# ======================================================
+TARGET_CALENDAR_ID = 'cargoada@gmail.com'  # <--- 請務必改成你的信箱
 
-# 👇 請填入你的 Gmail (記得保留前後引號)
-MY_CALENDAR_ID = 'cargoada@gmail.com'
-
+# ======================================================
+# 2. 小幫手函式 (已強制指定寫入你的信箱)
+# ======================================================
 def create_google_event(title, start_dt, end_dt):
     if service is None: return None
     try:
-        # 指定寫入你的日曆
-        event = service.events().insert(calendarId=MY_CALENDAR_ID, body={
+        event = service.events().insert(calendarId=TARGET_CALENDAR_ID, body={
             'summary': title,
             'start': {'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
         }).execute()
         return event.get('id')
     except Exception as e:
-        print(f"建立失敗: {e}")
+        st.error(f"建立失敗: {e}") # 顯示錯誤訊息以便除錯
         return None
 
 def update_google_event(event_id, title, start_dt, end_dt):
     if service is None or not event_id: return False
     try:
-        # 指定更新你的日曆
-        service.events().update(calendarId=MY_CALENDAR_ID, eventId=event_id, body={
+        service.events().update(calendarId=TARGET_CALENDAR_ID, eventId=event_id, body={
             'summary': title,
             'start': {'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
@@ -131,11 +130,9 @@ def update_google_event(event_id, title, start_dt, end_dt):
 def delete_google_event(event_id):
     if service is None or not event_id: return False
     try:
-        # 指定從你的日曆刪除
-        service.events().delete(calendarId=MY_CALENDAR_ID, eventId=event_id).execute()
+        service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event_id).execute()
         return True
     except: return False
-
 # ==========================================
 # 4. 主程式分頁
 # ==========================================
@@ -401,27 +398,29 @@ with tab4:
                     update_data("students", df_stu[df_stu['id'] != row['id']])
                     st.rerun()
 
-    # 👇 測試專用：放在程式碼最下面
+    # ======================================================
+    # 3. 測試按鈕區 (放在 app.py 最下面)
+    # ======================================================
 st.divider()
 st.subheader("🔧 日曆連線測試區")
-if st.button("測試連線"):
+if st.button("測試連線 (寫入我的日曆)"):
     if service:
         try:
-            # 1. 測試讀取
-            colors = service.colors().get().execute()
-            st.success("✅ 1. 連線成功 (機器人活著)")
-
-            # 2. 測試寫入權限
+            # 測試寫入權限
             test_event = {
-                'summary': '測試連線 (可刪除)',
+                'summary': '測試連線 (成功寫入你的日曆)',
                 'start': {'dateTime': datetime.now().isoformat(), 'timeZone': 'Asia/Taipei'},
                 'end': {'dateTime': (datetime.now() + timedelta(minutes=10)).isoformat(), 'timeZone': 'Asia/Taipei'},
             }
-            res = service.events().insert(calendarId='primary', body=test_event).execute()
-            st.success(f"✅ 2. 寫入成功！請看日曆上有沒有出現「測試連線」")
+            # 這裡也強制使用 TARGET_CALENDAR_ID
+            res = service.events().insert(calendarId=TARGET_CALENDAR_ID, body=test_event).execute()
+            st.success(f"✅ 成功！活動已建立在：{TARGET_CALENDAR_ID}")
+            st.info("快打開你的手機日曆，現在應該看到「測試連線」了！")
             st.json(res)
         except Exception as e:
             st.error(f"❌ 發生錯誤：{e}")
-            st.info("如果顯示 '403 Forbidden'，代表你沒開權限給機器人。")
+            if "403" in str(e) or "Not Found" in str(e):
+                st.warning(
+                    f"⚠️ 權限不足！請確認你有把日曆共用給機器人，並授權「變更活動」。\n機器人信箱：{st.secrets['connections']['gsheets']['client_email']}")
     else:
-        st.error("❌ Service 變數是空的 (Secrets 設定有錯)")
+        st.error("❌ Service 變數是空的")
