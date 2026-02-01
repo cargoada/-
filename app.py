@@ -410,30 +410,44 @@ with tab2:
             st.session_state.edit_session_id = cid
             st.rerun()
 
-    # 詳細列表
-    with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
-        if not df_sess.empty:
-            df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
-                                                                                                    ascending=False).head(
-                20)
-            for _, row in df_display.iterrows():
-                sid = int(row['id_x'])
-                gid = row.get('google_event_id', "")
-                connected = pd.notna(gid) and str(gid) != ""
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([4, 1, 1])
-                    c1.markdown(f"**{row['name']}** - {pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')}")
-                    if connected: c1.caption("✅ 已同步")
+        # ======================================================
+        # C. 詳細列表 (手機版優化：按鈕更緊湊)
+        # ======================================================
+        with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
+            if not df_sess.empty:
+                df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
+                                                                                                        ascending=False).head(
+                    20)
 
-                    if c2.button("✏️", key=f"ed{sid}"):
-                        st.session_state.edit_session_id = sid
-                        st.rerun()
-                    if c3.button("🗑️", key=f"del{sid}"):
-                        if connected: delete_google_event(gid)
-                        df_sess = df_sess[df_sess['id'].astype(int) != sid]
-                        update_data("sessions", df_sess)
-                        st.rerun()
+                for _, row in df_display.iterrows():
+                    sid = int(row['id_x'])
+                    gid = row.get('google_event_id', "")
+                    connected = pd.notna(gid) and str(gid) != ""
 
+                    with st.container(border=True):
+                        # 🔧 修改重點：
+                        # 1. 使用 gap="small" 縮小間距
+                        # 2. 比例改成 [6, 1, 1] -> 讓文字區最大，按鈕區只留一點點位置
+                        c1, c2, c3 = st.columns([6, 1, 1], gap="small")
+
+                        # 文字區 (垂直置中顯示)
+                        c1.markdown(f"**{row['name']}**")
+                        c1.caption(
+                            f"{pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')} {' (✅已同步)' if connected else ''}")
+
+                        # 編輯按鈕 (✏️)
+                        with c2:
+                            if st.button("✏️", key=f"ed{sid}", help="編輯"):
+                                st.session_state.edit_session_id = sid
+                                st.rerun()
+
+                        # 刪除按鈕 (🗑️)
+                        with c3:
+                            if st.button("🗑️", key=f"del{sid}", help="刪除"):
+                                if connected: delete_google_event(gid)
+                                df_sess = df_sess[df_sess['id'].astype(int) != sid]
+                                update_data("sessions", df_sess)
+                                st.rerun()
 # ================= Tab 3: 帳單 (分月結算版) =================
 with tab3:
     st.subheader("💰 帳單中心")
