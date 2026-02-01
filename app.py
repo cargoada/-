@@ -140,18 +140,88 @@ def delete_google_event(event_id):
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["🏠 概況", "📅 排課", "💰 帳單", "🧑‍🎓 學生"])
 
-# --- Tab 1: 概況 ---
+# ================= Tab 1: 概況 (修正計算邏輯) =================
 with tab1:
-    st.subheader("📊 本月速覽")
-    if st.button("🔄 刷新數據"): st.cache_data.clear(); st.rerun()
+    c_title, c_refresh = st.columns([3, 1.5])
+    c_title.subheader("📊 本月速覽")
+
+    # 手動刷新按鈕
+    if c_refresh.button("🔄 刷新數據", help="如果有修改資料，請按此更新數據"):
+        st.cache_data.clear()
+        st.rerun()
+
     df_sess = get_data("sessions")
+
     if not df_sess.empty:
-        pending = df_sess[(df_sess['status'] == '已完成') & (df_sess['invoice_id'].fillna(0) == 0)]
-        amt = sum(((pd.to_datetime(r['end_time']) - pd.to_datetime(r['start_time'])).total_seconds() / 3600) * int(
-            r['actual_rate']) for _, r in pending.iterrows())
-        c1, c2 = st.columns(2)
-        c1.metric("待結算金額", f"${int(amt):,}", f"{len(pending)} 堂")
-        c2.metric("總課程數", f"{len(df_sess)} 堂")
+        # -------------------------------------------------------
+        # 1. 定義什麼叫做「待結算」？
+        #    條件 A: 課程結束時間 < 現在時間 (代表已經上完課)
+        #    條件 B: invoice_id 是空的 (0, NaN, 或空字串)
+        # -------------------------------------------------------
+
+        # 轉換時間格式
+        df_sess['end_dt'] = pd.to_datetime(df_sess['end_time'], errors='coerce')
+        df_sess['start_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
+
+        # 清理 invoice_id (把空白、NaN 都變成 0)
+        df_sess['safe_invoice_id'] = pd.to_numeric(df_sess['invoice_id'], errors='coerce').fillna(0).astype(int)
+
+        # 建立篩選器
+        current_time = datetime.now()
+        # 邏輯：(時間已過) AND (沒有帳單ID)
+        pending_mask = (df_sess['end_dt'] < current_time) & (df_sess['safe_invoice_id'] == 0)
+
+        # 篩選出待結算的課程
+        pending_df = df_sess[pending_mask].copy()
+
+        # 計算總金額
+        pending_income = 0
+        if not pending_df.empty:
+            # 計算每堂課的金額：(結束-開始)的小時數 * 時薪
+            # 這裡用 apply 來逐行計算，避免向量化運算出錯
+            pending_income = sum(
+                ((row['end_dt'] - row['start_dt']).total_seconds() / 3600) * int(row['actual_rate'])
+                for _, row in pending_df.iterrows()
+            )
+
+        # 顯示數據
+        col1, col2 = st.columns(2)
+        col1.metric("待結算金額", f"${int(pending_income):,}", f"{len(pending_df)} 堂")
+        col2.metric("總課程數", f"{len(df_sess)} 堂")
+
+        # -------------------------------------------------------
+        # 2. 顯示計算明細 (讓你知道算到哪幾堂)
+        # -------------------------------------------------------
+        st.divider()
+        with st.expander("🔍 查看「待結算」的詳細課程 (覺得金額怪怪點這裡)"):
+            if not pending_df.empty:
+                # 為了顯示好看，我們要把學生名字找出來
+                df_stu = get_data("students")
+                if not df_stu.empty:
+                    pending_display = pd.merge(pending_df, df_stu, left_on='student_id', right_on='id', how='left')
+                else:
+                    pending_display = pending_df
+                    pending_display['name'] = "未知學生"
+
+                # 整理要顯示的欄位
+                show_list = []
+                for _, row in pending_display.iterrows():
+                    hours = (row['end_dt'] - row['start_dt']).total_seconds() / 3600
+                    amount = hours * row['actual_rate']
+                    show_list.append({
+                        "日期": row['start_dt'].strftime('%m/%d %H:%M'),
+                        "學生": row['name'],
+                        "時數": f"{hours:.1f} hr",
+                        "時薪": f"${row['actual_rate']}",
+                        "小計": f"${int(amount)}"
+                    })
+
+                st.table(pd.DataFrame(show_list))
+            else:
+                st.info("目前沒有待結算的課程。")
+
+    else:
+        st.info("尚無資料，請先至「📅 排課」分頁新增課程。")
 
 # --- Tab 2: 排課 ---
 with tab2:
