@@ -297,20 +297,71 @@ with tab3:
                                     for _, r in my_ds.iterrows()]
                             st.table(show)
 
+# ================= Tab 4: 學生 (詳細資訊復原版) =================
 with tab4:
     st.subheader("🧑‍🎓 學生管理")
-    with st.expander("➕ 新增"):
-        with st.form("a_s"):
-            n = st.text_input("名");
-            r = st.number_input("薪", 500);
-            c = st.selectbox("色", ["#FF5733", "#3498DB", "#2ECC71"]);
-            sub = st.form_submit_button("存")
-            if sub: update_data("students", pd.concat([df_stu, pd.DataFrame(
-                [{'id': int(df_stu['id'].max() + 1) if not df_stu.empty else 1, 'name': n, 'default_rate': r,
-                  'color': c}])], ignore_index=True)); st.rerun()
-    for _, row in df_stu.iterrows():
-        with st.container(border=True):
-            c1, c2 = st.columns([4, 1]);
-            c1.markdown(f"**{row['name']}**");
-            if c2.button("刪", key=f"ds{row['id']}"): update_data("students",
-                                                                  df_stu[df_stu['id'] != row['id']]); st.rerun()
+
+    # --- 新增學生區塊 ---
+    with st.expander("➕ 新增學生", expanded=False):
+        with st.form("add_stu_form"):
+            c1, c2 = st.columns(2)
+            n = c1.text_input("姓名", placeholder="例如：王小明")
+            r = c2.number_input("預設時薪", value=500, step=50)
+
+            # 顏色選擇 (含文字說明，存檔時會自動處理)
+            color_opt = st.selectbox("代表顏色", [
+                "#FF5733 (活力紅)", "#3498DB (沉穩藍)",
+                "#2ECC71 (清新綠)", "#F1C40F (明亮黃)",
+                "#9B59B6 (優雅紫)", "#95A5A6 (低調灰)"
+            ])
+
+            if st.form_submit_button("確認新增", type="primary"):
+                if n.strip():
+                    # 取出顏色代碼 (例如 "#FF5733")
+                    final_color = color_opt.split(" ")[0]
+
+                    new_id = int(df_stu['id'].max()) + 1 if not df_stu.empty else 1
+                    new_stu = pd.DataFrame([{
+                        'id': new_id,
+                        'name': n,
+                        'default_rate': r,
+                        'color': final_color
+                    }])
+
+                    # 合併並存檔
+                    update_data("students", pd.concat([df_stu, new_stu], ignore_index=True))
+                    st.toast(f"🎉 已新增學生：{n}")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("⚠️ 請輸入學生姓名")
+
+    st.divider()
+
+    # --- 學生列表顯示 ---
+    if not df_stu.empty:
+        # 依照 ID 排序顯示
+        for _, row in df_stu.sort_values('id').iterrows():
+            with st.container(border=True):
+                # 版面分配：色塊(1) | 資訊(4) | 刪除鈕(1)
+                col_icon, col_info, col_del = st.columns([0.5, 4, 1])
+
+                # 1. 顯示圓形色塊
+                col_icon.markdown(
+                    f'<div style="width:25px; height:25px; background-color:{row["color"]}; border-radius:50%; margin-top:10px;"></div>',
+                    unsafe_allow_html=True
+                )
+
+                # 2. 顯示詳細資訊
+                with col_info:
+                    st.markdown(f"**{row['name']}**")
+                    st.caption(f"💰 時薪：${row['default_rate']}/hr")
+
+                # 3. 刪除按鈕
+                if col_del.button("🗑️", key=f"del_stu_{row['id']}", help="刪除此學生"):
+                    # 雙重確認機制可以用 session_state 做，這裡先直接刪除
+                    new_df = df_stu[df_stu['id'] != row['id']]
+                    update_data("students", new_df)
+                    st.rerun()
+    else:
+        st.info("👻 目前沒有學生資料，請點擊上方「➕」新增。")
