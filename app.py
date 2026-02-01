@@ -98,7 +98,7 @@ def update_data(worksheet_name, df):
 def create_google_event(title, start_dt, end_dt):
     if service is None: return None
     try:
-        event = service.events().insert(calendarId='primary', body={
+        event = service.events().insert(calendarId='cargoada@gmail.com', body={
             'summary': title,
             'start': {'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
@@ -111,7 +111,7 @@ def create_google_event(title, start_dt, end_dt):
 def update_google_event(event_id, title, start_dt, end_dt):
     if service is None or not event_id: return False
     try:
-        service.events().update(calendarId='primary', eventId=event_id, body={
+        service.events().update(calendarId='cargoada@gmail.com', eventId=event_id, body={
             'summary': title,
             'start': {'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
@@ -124,7 +124,7 @@ def update_google_event(event_id, title, start_dt, end_dt):
 def delete_google_event(event_id):
     if service is None or not event_id: return False
     try:
-        service.events().delete(calendarId='primary', eventId=event_id).execute()
+        service.events().delete(calendarId='cargoada@gmail.com', eventId=event_id).execute()
         return True
     except:
         return False
