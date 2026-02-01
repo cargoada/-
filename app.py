@@ -95,10 +95,14 @@ def update_data(worksheet_name, df):
     st.cache_data.clear()
 
 
+# 1. 建立活動
 def create_google_event(title, start_dt, end_dt):
     if service is None: return None
     try:
-        event = service.events().insert(calendarId='cargoada@gmail.com', body={
+        # 👇 這裡原本是 'primary'，請改成你的 Gmail (記得要有單引號)
+        target_calendar = 'cargoada@gmail.com'
+
+        event = service.events().insert(calendarId=target_calendar, body={
             'summary': title,
             'start': {'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
@@ -108,10 +112,14 @@ def create_google_event(title, start_dt, end_dt):
         return None
 
 
+# 2. 更新活動
 def update_google_event(event_id, title, start_dt, end_dt):
     if service is None or not event_id: return False
     try:
-        service.events().update(calendarId='cargoada@gmail.com', eventId=event_id, body={
+        # 👇 這裡也要改
+        target_calendar = 'cargoada@gmail.com'
+
+        service.events().update(calendarId=target_calendar, eventId=event_id, body={
             'summary': title,
             'start': {'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
@@ -121,14 +129,17 @@ def update_google_event(event_id, title, start_dt, end_dt):
         return False
 
 
+# 3. 刪除活動
 def delete_google_event(event_id):
     if service is None or not event_id: return False
     try:
-        service.events().delete(calendarId='cargoada@gmail.com', eventId=event_id).execute()
+        # 👇 這裡也要改
+        target_calendar = 'cargoada@gmail.com'
+
+        service.events().delete(calendarId=target_calendar, eventId=event_id).execute()
         return True
     except:
         return False
-
 
 # ==========================================
 # 4. 主程式分頁
