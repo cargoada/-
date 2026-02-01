@@ -12,7 +12,6 @@ from googleapiclient.discovery import build
 # ==========================================
 # 1. 系統設定 (請填入你的日曆信箱)
 # ==========================================
-# 👇 這裡已經幫你填好成功的信箱了
 TARGET_CALENDAR_ID = 'cargoada@gmail.com'
 
 st.set_page_config(page_title="家教排課系統", page_icon="📅", layout="centered")
@@ -33,7 +32,7 @@ except Exception as e:
     print(f"Google 日曆連線失敗: {e}")
 
 # ==========================================
-# 2. 登入系統
+# 2. 登入系統與變數初始化
 # ==========================================
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
@@ -73,11 +72,11 @@ except:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 3. 側邊欄與小幫手函式
+# 3. 小幫手函式
 # ==========================================
 with st.sidebar:
     st.header(f"👤 您好，{CURRENT_USER}")
-    st.caption(f"日曆同步中：{TARGET_CALENDAR_ID}")  # 顯示目前同步的日曆
+    st.caption(f"日曆同步中：{TARGET_CALENDAR_ID}")
     if st.button("🚪 登出 / 切換身分"):
         st.session_state.current_user = None
         st.cache_data.clear()
@@ -140,7 +139,7 @@ def delete_google_event(event_id):
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["🏠 概況", "📅 排課", "💰 帳單", "🧑‍🎓 學生"])
 
-# ================= Tab 1: 概況 (含營收統計圖表) =================
+# --- Tab 1: 概況 (營收圖表版) ---
 with tab1:
     c_title, c_refresh = st.columns([3, 1.5])
     c_title.subheader("📊 營收儀表板")
@@ -153,35 +152,28 @@ with tab1:
     df_stu = get_data("students")
 
     if not df_sess.empty:
-        # --- 1. 資料前處理 ---
-        # 轉換時間
+        # 資料前處理
         df_sess['start_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
         df_sess['end_dt'] = pd.to_datetime(df_sess['end_time'], errors='coerce')
-
-        # 計算每堂課金額 (小時 * 時薪)
-        # 確保 rate 是數字
         df_sess['actual_rate'] = pd.to_numeric(df_sess['actual_rate'], errors='coerce').fillna(0)
         df_sess['amount'] = ((df_sess['end_dt'] - df_sess['start_dt']).dt.total_seconds() / 3600) * df_sess[
             'actual_rate']
 
-        # --- 2. 待結算區塊 (保持之前的邏輯) ---
+        # 待結算計算
         df_sess['safe_invoice_id'] = pd.to_numeric(df_sess['invoice_id'], errors='coerce').fillna(0).astype(int)
         current_time = datetime.now()
         pending_mask = (df_sess['end_dt'] < current_time) & (df_sess['safe_invoice_id'] == 0)
         pending_income = df_sess[pending_mask]['amount'].sum()
 
-        # 顯示關鍵指標
         col1, col2, col3 = st.columns(3)
-        col1.metric("本月預估收入",
+        col1.metric("本月預估",
                     f"${int(df_sess[df_sess['start_dt'].dt.month == current_time.month]['amount'].sum()):,}")
-        col2.metric("目前待結算", f"${int(pending_income):,}", delta="需開帳單")
-        col3.metric("歷史總收入", f"${int(df_sess['amount'].sum()):,}")
+        col2.metric("待結算", f"${int(pending_income):,}", delta="需開單")
+        col3.metric("總收入", f"${int(df_sess['amount'].sum()):,}")
 
         st.divider()
 
-        # --- 3. 統計圖表區 ---
-
-        # 合併學生名字 (為了讓圖表顯示人名而不是 ID)
+        # 圖表區
         if not df_stu.empty:
             chart_df = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
             chart_df['name'] = chart_df['name'].fillna("未知")
@@ -189,51 +181,32 @@ with tab1:
             chart_df = df_sess.copy()
             chart_df['name'] = "未知"
 
-        # [圖表 A] 月營收趨勢
         st.subheader("📈 月營收趨勢")
-        chart_df['month_str'] = chart_df['start_dt'].dt.strftime('%Y-%m')  # 變成 "2026-02" 格式
+        chart_df['month_str'] = chart_df['start_dt'].dt.strftime('%Y-%m')
+        st.bar_chart(chart_df.groupby('month_str')['amount'].sum(), color="#3498DB")
 
-        # 依月份加總金額
-        monthly_data = chart_df.groupby('month_str')['amount'].sum()
-
-        # 繪製長條圖
-        st.bar_chart(monthly_data, color="#3498DB")  # 藍色
-
-        # [圖表 B] 學生貢獻佔比
         st.subheader("🏆 學生營收貢獻")
+        st.bar_chart(chart_df.groupby('name')['amount'].sum().sort_values(ascending=False), horizontal=True,
+                     color="#FF5733")
 
-        # 依學生加總金額
-        student_data = chart_df.groupby('name')['amount'].sum().sort_values(ascending=False)
-
-        # 繪製橫向長條圖 (適合名字比較長的時候)
-        st.bar_chart(student_data, horizontal=True, color="#FF5733")  # 橘色
-
-        # --- 4. 待結算明細 (摺疊起來保持乾淨) ---
         with st.expander("🔍 查看「待結算」詳細清單"):
             if pending_income > 0:
                 pending_display = chart_df[pending_mask].copy()
-                show_list = []
-                for _, row in pending_display.iterrows():
-                    show_list.append({
-                        "日期": row['start_dt'].strftime('%m/%d'),
-                        "學生": row['name'],
-                        "金額": int(row['amount'])
-                    })
+                show_list = [{"日期": r['start_dt'].strftime('%m/%d'), "學生": r['name'], "金額": int(r['amount'])} for
+                             _, r in pending_display.iterrows()]
                 st.dataframe(pd.DataFrame(show_list), use_container_width=True)
             else:
                 st.info("目前沒有待結算課程")
-
     else:
         st.info("尚無課程資料，請先去排課！")
-# ================= Tab 2: 排課 (支援週期性排課版) =================
+
+# --- Tab 2: 排課 (開關優化版) ---
 with tab2:
     df_stu = get_data("students")
     df_sess = get_data("sessions")
     student_map = dict(zip(df_stu['name'], df_stu['id'])) if not df_stu.empty else {}
 
-    # -------------------------------------------------------
-    # A. 編輯模式 (保持單堂編輯，邏輯不變)
-    # -------------------------------------------------------
+    # A. 編輯模式
     if st.session_state.edit_session_id:
         st.subheader("✏️ 編輯或刪除課程")
         edit_id = st.session_state.edit_session_id
@@ -264,7 +237,6 @@ with tab2:
                     submit_save = st.form_submit_button("💾 儲存變更", type="primary")
 
                 col_del, col_cancel = st.columns([1, 1])
-
                 if col_del.button("🗑️ 刪除此課程", key="btn_del_direct"):
                     with st.spinner("正在刪除中..."):
                         if pd.notna(gid) and str(gid) != "" and service:
@@ -286,12 +258,10 @@ with tab2:
                         new_end = new_start + timedelta(hours=edit_dur)
                         new_sid = student_map[edit_stu]
                         rate = int(df_stu[df_stu['id'] == new_sid]['default_rate'].values[0])
-
                         idx = df_sess[df_sess['id'] == edit_id].index
                         df_sess.loc[idx, ['student_id', 'start_time', 'end_time', 'actual_rate', 'progress']] = \
                             [new_sid, new_start.strftime('%Y-%m-%dT%H:%M:%S'), new_end.strftime('%Y-%m-%dT%H:%M:%S'),
                              rate, edit_prog]
-
                         if gid and service: update_google_event(gid, f"家教: {edit_stu}", new_start, new_end)
                         update_data("sessions", df_sess)
                         time.sleep(1)
@@ -303,16 +273,12 @@ with tab2:
             st.session_state.edit_session_id = None
             st.rerun()
 
-        # -------------------------------------------------------
-        # B. 新增模式 (修正版：開關在表單外，反應更靈敏)
-        # -------------------------------------------------------
-        else:
+    # B. 新增模式 (🔥開關在表單外版)
+    else:
         st.subheader("➕ 快速記課")
 
-        # 🔥 關鍵修改：把開關放在這裡 (表單外面)
-        # 這樣一按下去，下面的表單就會立刻變形，不用等送出
         with st.container(border=True):
-            # 使用 toggle (開關) 看起來更現代化
+            # 1. 開關放在表單外面 -> 一按就馬上重整頁面
             is_recurring = st.toggle("🔁 啟用週期性排課 (一次建立多堂)", value=False)
 
             if is_recurring:
@@ -327,14 +293,13 @@ with tab2:
                 t_input = c3.time_input("開始時間", datetime.now().replace(minute=0, second=0))
                 dur = c4.slider("時數", 0.5, 3.0, 1.5, 0.5)
 
-                # --- 依據開關狀態，決定要不要顯示重複設定 ---
+                # 2. 根據開關狀態決定顯示內容
                 repeat_type = "單次 (不重複)"
                 repeat_count = 1
 
                 if is_recurring:
                     st.markdown("---")
                     c_rep1, c_rep2 = st.columns(2)
-                    # 既然開啟了，就直接讓使用者選頻率，不用再選「單次」了
                     repeat_type = c_rep1.selectbox("重複頻率", ["每週固定", "隔週固定 (雙週)"])
                     repeat_count = c_rep2.number_input("建立幾堂？", min_value=2, max_value=12, value=4)
 
@@ -342,7 +307,7 @@ with tab2:
                 do_sync = st.checkbox("🔄 同步至 Google 日曆", value=False)
                 n_prog = st.text_area("預定進度")
 
-                # 按鈕文字隨狀態改變
+                # 3. 按鈕文字動態變化
                 btn_text = f"✅ 建立 {repeat_count} 堂課程" if is_recurring else "✅ 建立課程"
                 add_submit = st.form_submit_button(btn_text, type="primary")
 
@@ -353,7 +318,6 @@ with tab2:
                     start_base = datetime.combine(d_input, t_input)
                     new_rows = []
 
-                    # 只有在開啟循環時才跑迴圈，否則只跑一次
                     loop_count = repeat_count if is_recurring else 1
 
                     for i in range(loop_count):
@@ -389,9 +353,8 @@ with tab2:
 
                 st.success(f"成功建立！")
                 st.rerun()
-    # ==========================
-    # C. 日曆與列表區 (保持不變)
-    # ==========================
+
+    # C. 日曆與列表區
     st.divider()
     c_cal, c_ref = st.columns([4, 1])
     c_cal.subheader("🗓️ 行事曆")
@@ -408,24 +371,17 @@ with tab2:
                     s_iso = pd.to_datetime(row['start_time']).isoformat()
                     e_iso = pd.to_datetime(row['end_time']).isoformat()
                     events.append({
-                        "id": str(row['id_x']),
-                        "title": row['name'],
+                        "id": str(row['id_x']), "title": row['name'],
                         "start": s_iso, "end": e_iso,
-                        "backgroundColor": row['color'], "borderColor": row['color'],
-                        "textColor": "#FFFFFF"
+                        "backgroundColor": row['color'], "borderColor": row['color'], "textColor": "#FFFFFF"
                     })
                 except:
                     continue
         except:
             pass
 
-    calendar_options = {
-        "initialView": "dayGridMonth",
-        "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek,listMonth"},
-        "height": 650,
-    }
-    cal = calendar(events=events, options=calendar_options, callbacks=['eventClick'], key="cal_v_final")
-
+    cal = calendar(events=events, options={"initialView": "dayGridMonth", "height": 650}, callbacks=['eventClick'],
+                   key="cal_v_final")
     if cal.get("eventClick"):
         cid = int(cal["eventClick"]["event"]["id"])
         if st.session_state.edit_session_id != cid:
@@ -447,152 +403,86 @@ with tab2:
                     c1.caption(
                         f"{pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')} {'(✅已同步)' if connected else ''}")
                     with c2:
-                        if st.button("✏️", key=f"ed{sid}"):
-                            st.session_state.edit_session_id = sid
-                            st.rerun()
+                        if st.button("✏️", key=f"ed{sid}"): st.session_state.edit_session_id = sid; st.rerun()
                     with c3:
                         if st.button("🗑️", key=f"del{sid}"):
                             if connected: delete_google_event(gid)
                             df_sess = df_sess[df_sess['id'].astype(int) != sid]
                             update_data("sessions", df_sess)
                             st.rerun()
-# ================= Tab 3: 帳單 (分月結算版) =================
+
+# --- Tab 3: 帳單 (分月結算版) ---
 with tab3:
     st.subheader("💰 帳單中心")
     df_inv = get_data("invoices")
-    df_sess = get_data("sessions")  # 確保讀到最新課程資料
+    df_sess = get_data("sessions")
 
-    # -------------------------------------------------------
-    # 1. 一鍵結算 (邏輯修改：按「學生 + 月份」分組)
-    # -------------------------------------------------------
     if st.button("⚡ 一鍵結算 (自動分月開單)", type="primary"):
-        # 1. 找出所有「已完成」且「未結算」的課程
-        #    (這裡也包含了時間已過但還沒改狀態的課程，自動判定)
         df_sess['end_dt'] = pd.to_datetime(df_sess['end_time'], errors='coerce')
         df_sess['safe_inv'] = pd.to_numeric(df_sess['invoice_id'], errors='coerce').fillna(0).astype(int)
-
-        # 條件：(狀態完成 OR 時間已過) AND (沒有帳單ID)
         mask = ((df_sess['status'] == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['safe_inv'] == 0)
         pending_df = df_sess[mask].copy()
 
         if not pending_df.empty:
-            # 2. 增加「月份」欄位 (例如 "2026-02")
             pending_df['month_str'] = pd.to_datetime(pending_df['start_time']).dt.strftime('%Y-%m')
-
-            # 3. 根據 (學生ID, 月份) 進行分組
-            #    這樣同一個學生，不同月份的課會被拆成兩張單
             groups = pending_df.groupby(['student_id', 'month_str'])
-
             new_inv_count = 0
 
             for (sid, m_str), group in groups:
-                # 計算該月總金額
                 total_amt = sum(
                     ((pd.to_datetime(r['end_time']) - pd.to_datetime(r['start_time'])).total_seconds() / 3600) * int(
-                        r['actual_rate'])
-                    for _, r in group.iterrows()
-                )
-
-                # 建立新帳單
-                # (這裡不檢查舊帳單，直接開新單，避免邏輯混亂。因為篩選器已經確保這些課是沒算過的)
+                        r['actual_rate']) for _, r in group.iterrows())
                 inv_id = int(df_inv['id'].max()) + 1 if not df_inv.empty else 1
-
-                new_inv = pd.DataFrame([{
-                    'id': inv_id,
-                    'student_id': sid,
-                    'total_amount': int(total_amt),
-                    'created_at': datetime.now().isoformat(),
-                    'is_paid': 0,
-                    'note': m_str  # 利用 note 欄位偷偷記住月份 (或者不記也可以，等等顯示會自動抓)
-                }])
-
+                new_inv = pd.DataFrame([{'id': inv_id, 'student_id': sid, 'total_amount': int(total_amt),
+                                         'created_at': datetime.now().isoformat(), 'is_paid': 0, 'note': m_str}])
                 df_inv = pd.concat([df_inv, new_inv], ignore_index=True)
-
-                # 把課程標記為這張帳單
                 df_sess.loc[group.index, 'invoice_id'] = inv_id
                 new_inv_count += 1
 
-            # 存檔
-            update_data("invoices", df_inv)
+            update_data("invoices", df_inv);
             update_data("sessions", df_sess)
-            st.success(f"結算完成！共產出 {new_inv_count} 張分月帳單。")
-            time.sleep(1)
+            st.success(f"結算完成！產出 {new_inv_count} 張帳單。");
             st.rerun()
         else:
-            st.info("👏 目前沒有未結算的課程")
+            st.info("目前沒有未結算的課程")
 
     st.divider()
-
-    # -------------------------------------------------------
-    # 2. 顯示帳單列表 (顯示月份)
-    # -------------------------------------------------------
     if not df_inv.empty:
-        # 篩選未付款
         unpaid = df_inv[df_inv['is_paid'] == 0]
-
         if not unpaid.empty:
-            # 合併學生名字
-            df_disp = pd.merge(unpaid, df_stu, left_on='student_id', right_on='id', how='left')
-            # 依照日期新到舊排序
-            df_disp = df_disp.sort_values('created_at', ascending=False)
-
+            df_disp = pd.merge(unpaid, df_stu, left_on='student_id', right_on='id', how='left').sort_values(
+                'created_at', ascending=False)
             for _, row in df_disp.iterrows():
                 inv_id = row['id_x']
-                s_name = row['name'] if pd.notna(row['name']) else "未知學生"
+                s_name = row['name'] if pd.notna(row['name']) else "未知"
+                bill_month = str(row['note']) if pd.notna(row['note']) else "未知月份"
 
-                # --- 找出這張帳單是屬於哪個月份的 ---
-                # 技巧：去 sessions 找這張帳單底下第一堂課的時間
-                my_sessions = df_sess[pd.to_numeric(df_sess['invoice_id'], errors='coerce') == inv_id]
-
-                bill_month = "未知月份"
-                if not my_sessions.empty:
-                    # 抓第一筆資料的開始時間，轉成 YYYY-MM
-                    first_date = pd.to_datetime(my_sessions.iloc[0]['start_time'])
-                    bill_month = first_date.strftime('%Y年%m月')
-
-                # --- 顯示區塊 ---
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
-
-                    # 標題顯示： 王小明 (2026年02月) - $5,000
                     c1.markdown(f"**{s_name} ({bill_month})**")
-                    c1.markdown(f"💰 **${row['total_amount']:,}**")
-                    c1.caption(f"開單日：{pd.to_datetime(row['created_at']).strftime('%Y/%m/%d')}")
-
-                    # 收款按鈕
+                    c1.caption(f"💰 **${row['total_amount']:,}**")
                     if c2.button("收款", key=f"pay_{inv_id}"):
                         df_inv.loc[df_inv['id'] == inv_id, 'is_paid'] = 1
-                        update_data("invoices", df_inv)
-                        st.success("已標記為收款！")
-                        time.sleep(0.5)
+                        update_data("invoices", df_inv);
+                        st.success("已收款");
+                        time.sleep(0.5);
                         st.rerun()
-
-                    # 明細與下載
-                    with st.expander("📄 查看明細 / 下載 Excel"):
-                        if not my_sessions.empty:
-                            show_list = []
-                            for _, r in my_sessions.iterrows():
-                                s = pd.to_datetime(r['start_time'])
-                                e = pd.to_datetime(r['end_time'])
-                                hrs = (e - s).total_seconds() / 3600
-                                amt = hrs * r['actual_rate']
-                                show_list.append({
-                                    "日期": s.strftime('%m/%d'),
-                                    "時間": f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}",
-                                    "時數": f"{hrs:.1f}",
-                                    "金額": int(amt)
-                                })
-
-                            st.table(pd.DataFrame(show_list))
-
-                            # 下載按鈕
-                            csv_data = pd.DataFrame(show_list).to_csv(index=False).encode('utf-8-sig')
-                            file_name = f"{s_name}_{bill_month}_學費單.csv"
-                            st.download_button("📥 下載帳單", csv_data, file_name, "text/csv", key=f"dl_{inv_id}")
+                    with st.expander("📄 明細"):
+                        my_ds = df_sess[pd.to_numeric(df_sess['invoice_id'], errors='coerce') == inv_id]
+                        if not my_ds.empty:
+                            show = [{"日期": pd.to_datetime(r['start_time']).strftime('%m/%d'),
+                                     "時數": f"{((pd.to_datetime(r['end_time']) - pd.to_datetime(r['start_time'])).total_seconds() / 3600):.1f}",
+                                     "金額": int(((pd.to_datetime(r['end_time']) - pd.to_datetime(
+                                         r['start_time'])).total_seconds() / 3600) * r['actual_rate'])} for _, r in
+                                    my_ds.iterrows()]
+                            st.table(pd.DataFrame(show))
+                            csv = pd.DataFrame(show).to_csv(index=False).encode('utf-8-sig')
+                            st.download_button("📥 下載", csv, f"帳單_{inv_id}.csv", "text/csv", key=f"dl_{inv_id}")
         else:
-            st.info("🎉 太棒了！所有帳單都已結清。")
+            st.info("🎉 帳單全數結清！")
     else:
-        st.info("尚無帳單資料。")
+        st.info("尚無帳單")
+
 # --- Tab 4: 學生 ---
 with tab4:
     st.subheader("🧑‍🎓 學生管理")
@@ -608,7 +498,7 @@ with tab4:
                 new_stu = pd.DataFrame(
                     [{'id': int(df_stu['id'].max() + 1) if not df_stu.empty else 1, 'name': n, 'default_rate': r,
                       'color': final_color}])
-                update_data("students", pd.concat([df_stu, new_stu], ignore_index=True))
+                update_data("students", pd.concat([df_stu, new_stu], ignore_index=True));
                 st.rerun()
 
     if not df_stu.empty:
@@ -619,8 +509,8 @@ with tab4:
                     f'<div style="width:25px;height:25px;background-color:{row["color"]};border-radius:50%;margin-top:10px;"></div>',
                     unsafe_allow_html=True)
                 with c_info:
-                    st.markdown(f"**{row['name']}**")
+                    st.markdown(f"**{row['name']}**");
                     st.caption(f"💰 時薪：${row['default_rate']}")
                 if c_del.button("🗑️", key=f"ds_{row['id']}"):
-                    update_data("students", df_stu[df_stu['id'] != row['id']])
+                    update_data("students", df_stu[df_stu['id'] != row['id']]);
                     st.rerun()
