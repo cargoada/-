@@ -10,8 +10,11 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 # ==========================================
-# 1. 系統設定與 Google 服務連線
+# 1. 系統設定 (請填入你的日曆信箱)
 # ==========================================
+# 👇 這裡已經幫你填好成功的信箱了
+TARGET_CALENDAR_ID = 'cargoada@gmail.com'
+
 st.set_page_config(page_title="家教排課系統", page_icon="📅", layout="centered")
 
 SCOPES = [
@@ -19,6 +22,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/calendar'
 ]
 
+# --- 啟動 Google 日曆機器人 ---
 service = None
 try:
     if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
@@ -34,7 +38,6 @@ except Exception as e:
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 
-# 🔥 關鍵修復：在這裡初始化編輯狀態變數
 if 'edit_session_id' not in st.session_state:
     st.session_state.edit_session_id = None
 
@@ -74,6 +77,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # ==========================================
 with st.sidebar:
     st.header(f"👤 您好，{CURRENT_USER}")
+    st.caption(f"日曆同步中：{TARGET_CALENDAR_ID}")  # 顯示目前同步的日曆
     if st.button("🚪 登出 / 切換身分"):
         st.session_state.current_user = None
         st.cache_data.clear()
@@ -95,14 +99,7 @@ def update_data(worksheet_name, df):
     st.cache_data.clear()
 
 
-# ======================================================
-# 1. 設定你的日曆信箱 (請修改這裡！)
-# ======================================================
-TARGET_CALENDAR_ID = 'cargoada@gmail.com'  # <--- 請務必改成你的信箱
-
-# ======================================================
-# 2. 小幫手函式 (已強制指定寫入你的信箱)
-# ======================================================
+# --- 日曆操作 (強制寫入指定信箱) ---
 def create_google_event(title, start_dt, end_dt):
     if service is None: return None
     try:
@@ -112,9 +109,9 @@ def create_google_event(title, start_dt, end_dt):
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
         }).execute()
         return event.get('id')
-    except Exception as e:
-        st.error(f"建立失敗: {e}") # 顯示錯誤訊息以便除錯
+    except:
         return None
+
 
 def update_google_event(event_id, title, start_dt, end_dt):
     if service is None or not event_id: return False
@@ -125,14 +122,19 @@ def update_google_event(event_id, title, start_dt, end_dt):
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
         }).execute()
         return True
-    except: return False
+    except:
+        return False
+
 
 def delete_google_event(event_id):
     if service is None or not event_id: return False
     try:
         service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event_id).execute()
         return True
-    except: return False
+    except:
+        return False
+
+
 # ==========================================
 # 4. 主程式分頁
 # ==========================================
@@ -151,15 +153,14 @@ with tab1:
         c1.metric("待結算金額", f"${int(amt):,}", f"{len(pending)} 堂")
         c2.metric("總課程數", f"{len(df_sess)} 堂")
 
-# --- Tab 2: 排課 (包含編輯、同步選項、日曆) ---
+# --- Tab 2: 排課 ---
 with tab2:
     df_stu = get_data("students")
     df_sess = get_data("sessions")
     student_map = dict(zip(df_stu['name'], df_stu['id'])) if not df_stu.empty else {}
 
-    # 判斷是編輯模式還是新增模式
+    # [編輯模式]
     if st.session_state.edit_session_id:
-        # [編輯模式]
         st.subheader("✏️ 編輯課程")
         edit_id = st.session_state.edit_session_id
         row = df_sess[df_sess['id'] == edit_id]
@@ -195,7 +196,6 @@ with tab2:
                         [new_sid, new_start.strftime('%Y-%m-%dT%H:%M:%S'), new_end.strftime('%Y-%m-%dT%H:%M:%S'), rate,
                          edit_prog]
 
-                    # 嘗試更新日曆
                     gid = row.get('google_event_id', "")
                     if gid and service: update_google_event(gid, f"家教: {edit_stu}", new_start, new_end)
 
@@ -211,8 +211,9 @@ with tab2:
             st.error("查無此課程")
             st.session_state.edit_session_id = None
             st.rerun()
+
+    # [新增模式]
     else:
-        # [新增模式]
         st.subheader("➕ 快速記課")
         with st.container(border=True):
             if not df_stu.empty:
@@ -223,7 +224,7 @@ with tab2:
                 t_input = c3.time_input("開始", datetime.now().replace(minute=0, second=0))
                 dur = c4.slider("時數", 0.5, 3.0, 1.5, 0.5)
 
-                # 同步選項 (預設 False)
+                # 同步選項 (預設不勾選)
                 do_sync = st.checkbox("🔄 同步至 Google 日曆", value=False)
 
                 n_prog = st.text_area("預定進度")
@@ -235,6 +236,7 @@ with tab2:
                     rate = int(df_stu[df_stu['id'] == sid]['default_rate'].values[0])
 
                     g_id = ""
+                    # 只有勾選才會建立
                     if do_sync and service:
                         g_id = create_google_event(f"家教: {sel_stu}", start_p, end_p)
 
@@ -253,7 +255,6 @@ with tab2:
                     time.sleep(1)
                     st.rerun()
 
-    # 日曆顯示
     st.divider()
     c_cal, c_ref = st.columns([4, 1])
     c_cal.subheader("🗓️ 行事曆")
@@ -280,7 +281,6 @@ with tab2:
             st.session_state.edit_session_id = cid
             st.rerun()
 
-    # 列表與刪除 (防呆版)
     with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
         if not df_sess.empty:
             df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
@@ -290,12 +290,10 @@ with tab2:
                 sid = int(row['id_x'])
                 gid = row.get('google_event_id', "")
                 connected = pd.notna(gid) and str(gid) != ""
-
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([4, 1, 1])
                     c1.markdown(f"**{row['name']}** - {pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')}")
                     if connected: c1.caption("✅ 已同步")
-
                     if c2.button("✏️", key=f"ed{sid}"):
                         st.session_state.edit_session_id = sid
                         st.rerun()
@@ -363,11 +361,10 @@ with tab3:
                                                                                                                 'actual_rate'])}
                                     for _, r in my_ds.iterrows()]
                             st.table(show)
-                            # 下載 CSV
                             csv = pd.DataFrame(show).to_csv(index=False).encode('utf-8-sig')
                             st.download_button("📥 下載 Excel", csv, f"{row['name']}_帳單.csv", "text/csv")
 
-# --- Tab 4: 學生 (詳細資訊版) ---
+# --- Tab 4: 學生 ---
 with tab4:
     st.subheader("🧑‍🎓 學生管理")
     with st.expander("➕ 新增學生"):
@@ -375,7 +372,8 @@ with tab4:
             c1, c2 = st.columns(2)
             n = c1.text_input("姓名");
             r = c2.number_input("時薪", 500)
-            color_opt = st.selectbox("顏色", ["#FF5733 (紅)", "#3498DB (藍)", "#2ECC71 (綠)", "#F1C40F (黃)"])
+            color_opt = st.selectbox("顏色",
+                                     ["#FF5733 (紅)", "#3498DB (藍)", "#2ECC71 (綠)", "#F1C40F (黃)", "#9B59B6 (紫)"])
             if st.form_submit_button("新增"):
                 final_color = color_opt.split(" ")[0]
                 new_stu = pd.DataFrame(
@@ -397,30 +395,3 @@ with tab4:
                 if c_del.button("🗑️", key=f"ds_{row['id']}"):
                     update_data("students", df_stu[df_stu['id'] != row['id']])
                     st.rerun()
-
-    # ======================================================
-    # 3. 測試按鈕區 (放在 app.py 最下面)
-    # ======================================================
-st.divider()
-st.subheader("🔧 日曆連線測試區")
-if st.button("測試連線 (寫入我的日曆)"):
-    if service:
-        try:
-            # 測試寫入權限
-            test_event = {
-                'summary': '測試連線 (成功寫入你的日曆)',
-                'start': {'dateTime': datetime.now().isoformat(), 'timeZone': 'Asia/Taipei'},
-                'end': {'dateTime': (datetime.now() + timedelta(minutes=10)).isoformat(), 'timeZone': 'Asia/Taipei'},
-            }
-            # 這裡也強制使用 TARGET_CALENDAR_ID
-            res = service.events().insert(calendarId=TARGET_CALENDAR_ID, body=test_event).execute()
-            st.success(f"✅ 成功！活動已建立在：{TARGET_CALENDAR_ID}")
-            st.info("快打開你的手機日曆，現在應該看到「測試連線」了！")
-            st.json(res)
-        except Exception as e:
-            st.error(f"❌ 發生錯誤：{e}")
-            if "403" in str(e) or "Not Found" in str(e):
-                st.warning(
-                    f"⚠️ 權限不足！請確認你有把日曆共用給機器人，並授權「變更活動」。\n機器人信箱：{st.secrets['connections']['gsheets']['client_email']}")
-    else:
-        st.error("❌ Service 變數是空的")
