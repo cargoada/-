@@ -349,59 +349,64 @@ with tab2:
                     time.sleep(1)
                     st.rerun()
 
-    # --- B. 日曆與列表區 ---
+    # ======================================================
+    # B. 日曆顯示區 (日期格式修復版)
+    # ======================================================
     st.divider()
     c_cal, c_ref = st.columns([4, 1])
     c_cal.subheader("🗓️ 行事曆")
-    if c_ref.button("重整"): st.rerun()
+    if c_ref.button("重整", key="refresh_cal"):
+        st.cache_data.clear()
+        st.rerun()
 
     events = []
     if not df_sess.empty and not df_stu.empty:
         try:
+            # 合併資料
             merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
-            for _, row in merged.iterrows():
-                events.append({
-                    "id": str(row['id_x']),
-                    "title": row['name'],
-                    "start": row['start_time'], "end": row['end_time'],
-                    "backgroundColor": row['color'], "borderColor": row['color']
-                })
-        except:
-            pass
 
-    cal = calendar(events=events, options={"initialView": "dayGridMonth"}, callbacks=['eventClick'], key="cal_main")
+            for _, row in merged.iterrows():
+                # 🔥 關鍵修正：強制轉成標準 ISO 格式 (YYYY-MM-DDTHH:mm:ss)
+                # 這樣不管 Excel 裡是 2026/2/1 還是 2026-02-01，程式都能讀懂
+                try:
+                    s_iso = pd.to_datetime(row['start_time']).isoformat()
+                    e_iso = pd.to_datetime(row['end_time']).isoformat()
+
+                    events.append({
+                        "id": str(row['id_x']),
+                        "title": row['name'],
+                        "start": s_iso,
+                        "end": e_iso,
+                        "backgroundColor": row['color'],
+                        "borderColor": row['color'],
+                        "textColor": "#FFFFFF"  # 強制白字，避免看不清楚
+                    })
+                except:
+                    # 如果這筆資料日期壞掉，就跳過它，不要讓整個日曆當掉
+                    continue
+        except Exception as e:
+            st.error(f"資料讀取錯誤: {e}")
+
+    # 設定日曆參數 (增加 height 避免被壓縮)
+    calendar_options = {
+        "initialView": "dayGridMonth",
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,timeGridWeek,listMonth"
+        },
+        "height": 650,  # 固定高度
+    }
+
+    # 顯示日曆 (更換 key 確保強制重繪)
+    cal = calendar(events=events, options=calendar_options, callbacks=['eventClick'], key="cal_v_robust")
+
+    # 點擊事件監聽
     if cal.get("eventClick"):
         cid = int(cal["eventClick"]["event"]["id"])
         if st.session_state.edit_session_id != cid:
             st.session_state.edit_session_id = cid
             st.rerun()
-
-    # 詳細列表
-    with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
-        if not df_sess.empty:
-            df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
-                                                                                                    ascending=False).head(
-                20)
-            for _, row in df_display.iterrows():
-                sid = int(row['id_x'])
-                gid = row.get('google_event_id', "")
-                connected = pd.notna(gid) and str(gid) != ""
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([4, 1, 1])
-                    c1.markdown(f"**{row['name']}** - {pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')}")
-                    if connected: c1.caption("✅ 已同步")
-
-                    # ✏️ 點擊編輯
-                    if c2.button("✏️", key=f"ed{sid}"):
-                        st.session_state.edit_session_id = sid
-                        st.rerun()
-
-                    # 🗑️ 點擊刪除
-                    if c3.button("🗑️", key=f"del{sid}"):
-                        if connected: delete_google_event(gid)
-                        df_sess = df_sess[df_sess['id'].astype(int) != sid]
-                        update_data("sessions", df_sess)
-                        st.rerun()
 
 # ================= Tab 3: 帳單 (分月結算版) =================
 with tab3:
