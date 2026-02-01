@@ -225,19 +225,16 @@ with tab1:
 
     else:
         st.info("尚無課程資料，請先去排課！")
-# ================= Tab 2: 排課 (加入載入動畫版) =================
+# ================= Tab 2: 排課 (支援週期性排課版) =================
 with tab2:
     df_stu = get_data("students")
     df_sess = get_data("sessions")
     student_map = dict(zip(df_stu['name'], df_stu['id'])) if not df_stu.empty else {}
 
     # -------------------------------------------------------
-    # 判斷是編輯模式還是新增模式
+    # A. 編輯模式 (保持單堂編輯，邏輯不變)
     # -------------------------------------------------------
     if st.session_state.edit_session_id:
-        # ==========================
-        # 🟢 編輯/刪除模式
-        # ==========================
         st.subheader("✏️ 編輯或刪除課程")
         edit_id = st.session_state.edit_session_id
         row = df_sess[df_sess['id'] == edit_id]
@@ -268,15 +265,13 @@ with tab2:
 
                 col_del, col_cancel = st.columns([1, 1])
 
-                # 🗑️ 刪除按鈕
                 if col_del.button("🗑️ 刪除此課程", key="btn_del_direct"):
-                    with st.spinner("正在刪除中..."):  # ⏳ 加入動畫
+                    with st.spinner("正在刪除中..."):
                         if pd.notna(gid) and str(gid) != "" and service:
                             delete_google_event(gid)
                         df_sess = df_sess[df_sess['id'] != edit_id]
                         update_data("sessions", df_sess)
-                        time.sleep(1)  # 稍微緩衝，確保 Sheet 寫入完成
-
+                        time.sleep(1)
                     st.session_state.edit_session_id = None
                     st.toast("🗑️ 課程已刪除")
                     st.rerun()
@@ -285,9 +280,8 @@ with tab2:
                     st.session_state.edit_session_id = None
                     st.rerun()
 
-                # 💾 儲存邏輯
                 if submit_save:
-                    with st.spinner("正在同步資料到 Google..."):  # ⏳ 加入動畫
+                    with st.spinner("更新中..."):
                         new_start = datetime.combine(edit_date, edit_time)
                         new_end = new_start + timedelta(hours=edit_dur)
                         new_sid = student_map[edit_stu]
@@ -299,10 +293,8 @@ with tab2:
                              rate, edit_prog]
 
                         if gid and service: update_google_event(gid, f"家教: {edit_stu}", new_start, new_end)
-
                         update_data("sessions", df_sess)
-                        time.sleep(1.5)  # 稍微加長緩衝時間，確保資料回來
-
+                        time.sleep(1)
                     st.session_state.edit_session_id = None
                     st.success("更新成功！")
                     st.rerun()
@@ -311,54 +303,89 @@ with tab2:
             st.session_state.edit_session_id = None
             st.rerun()
 
+    # -------------------------------------------------------
+    # B. 新增模式 (🔥 升級：支援週期性排課)
+    # -------------------------------------------------------
     else:
-        # ==========================
-        # 🔵 新增模式
-        # ==========================
         st.subheader("➕ 快速記課")
         with st.container(border=True):
             if not df_stu.empty:
                 with st.form(key="add_form"):
                     c1, c2 = st.columns(2)
                     sel_stu = c1.selectbox("選擇學生", df_stu['name'].tolist())
-                    d_input = c2.date_input("日期", datetime.now())
+                    d_input = c2.date_input("首堂日期", datetime.now())  # 改名為首堂
+
                     c3, c4 = st.columns(2)
-                    t_input = c3.time_input("開始", datetime.now().replace(minute=0, second=0))
+                    t_input = c3.time_input("開始時間", datetime.now().replace(minute=0, second=0))
                     dur = c4.slider("時數", 0.5, 3.0, 1.5, 0.5)
+
+                    # --- ✨ 新功能：重複設定 ---
+                    st.markdown("---")
+                    st.markdown("🔁 **週期設定**")
+                    col_rep1, col_rep2 = st.columns(2)
+                    repeat_type = col_rep1.selectbox("重複頻率", ["單次 (不重複)", "每週固定", "隔週固定 (雙週)"])
+                    repeat_count = 1
+                    if repeat_type != "單次 (不重複)":
+                        repeat_count = col_rep2.number_input("重複幾次？", min_value=2, max_value=12, value=4,
+                                                             help="例如設為 4，就會自動建立未來 4 週的課程")
+
+                    st.markdown("---")
                     do_sync = st.checkbox("🔄 同步至 Google 日曆", value=False)
-                    n_prog = st.text_area("預定進度")
-                    add_submit = st.form_submit_button("✅ 新增課程", type="primary")
+                    n_prog = st.text_area("預定進度 (所有課程將使用相同備註)")
+
+                    add_submit = st.form_submit_button("✅ 建立課程", type="primary")
 
                 if add_submit:
-                    # ⏳ 加入動畫，讓使用者知道「我有在動，請稍等」
-                    with st.spinner("正在寫入 Google 日曆與試算表..."):
-                        start_p = datetime.combine(d_input, t_input)
-                        end_p = start_p + timedelta(hours=dur)
+                    with st.spinner(f"正在建立 {repeat_count} 堂課程..."):
+
                         sid = student_map[sel_stu]
                         rate = int(df_stu[df_stu['id'] == sid]['default_rate'].values[0])
+                        start_base = datetime.combine(d_input, t_input)
 
-                        g_id = ""
-                        if do_sync and service:
-                            g_id = create_google_event(f"家教: {sel_stu}", start_p, end_p)
+                        new_rows = []
 
-                        new_row = pd.DataFrame([{
-                            'id': int(df_sess['id'].max() + 1) if not df_sess.empty else 1,
-                            'student_id': sid,
-                            'start_time': start_p.strftime('%Y-%m-%dT%H:%M:%S'),
-                            'end_time': end_p.strftime('%Y-%m-%dT%H:%M:%S'),
-                            'status': '已完成' if start_p < datetime.now() else '已預約',
-                            'actual_rate': rate,
-                            'google_event_id': g_id,
-                            'progress': n_prog
-                        }])
-                        update_data("sessions", pd.concat([df_sess, new_row], ignore_index=True))
-                        time.sleep(1.5)  # 給 Google Sheet 一點時間喘口氣
+                        # 迴圈建立多堂課
+                        for i in range(repeat_count):
+                            # 計算每堂課的時間偏移
+                            if repeat_type == "每週固定":
+                                offset = timedelta(weeks=i)
+                            elif repeat_type == "隔週固定 (雙週)":
+                                offset = timedelta(weeks=i * 2)
+                            else:
+                                offset = timedelta(0)
 
-                    st.success("已新增！")
+                            current_start = start_base + offset
+                            current_end = current_start + timedelta(hours=dur)
+
+                            # Google 日曆同步
+                            g_id = ""
+                            if do_sync and service:
+                                g_id = create_google_event(f"家教: {sel_stu}", current_start, current_end)
+                                # 稍微停一下避免 Google API 限制
+                                time.sleep(0.3)
+
+                            new_rows.append({
+                                'id': int(df_sess['id'].max() + 1 + i) if not df_sess.empty else 1 + i,
+                                'student_id': sid,
+                                'start_time': current_start.strftime('%Y-%m-%dT%H:%M:%S'),
+                                'end_time': current_end.strftime('%Y-%m-%dT%H:%M:%S'),
+                                'status': '已完成' if current_start < datetime.now() else '已預約',
+                                'actual_rate': rate,
+                                'google_event_id': g_id,
+                                'progress': n_prog
+                            })
+
+                        # 一次性寫入資料庫
+                        if new_rows:
+                            update_data("sessions", pd.concat([df_sess, pd.DataFrame(new_rows)], ignore_index=True))
+
+                        time.sleep(1)
+
+                    st.success(f"成功建立 {repeat_count} 堂課程！")
                     st.rerun()
 
     # ==========================
-    # B. 日曆與列表區
+    # C. 日曆與列表區 (保持不變)
     # ==========================
     st.divider()
     c_cal, c_ref = st.columns([4, 1])
@@ -387,7 +414,6 @@ with tab2:
         except:
             pass
 
-    # 設定日曆
     calendar_options = {
         "initialView": "dayGridMonth",
         "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek,listMonth"},
@@ -401,7 +427,6 @@ with tab2:
             st.session_state.edit_session_id = cid
             st.rerun()
 
-    # C. 詳細列表 (手機版優化)
     with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
         if not df_sess.empty:
             df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
