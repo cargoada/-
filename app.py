@@ -193,7 +193,7 @@ with tab1:
         # 2. 顯示計算明細 (讓你知道算到哪幾堂)
         # -------------------------------------------------------
         st.divider()
-        with st.expander("🔍 查看「待結算」的詳細課程 (覺得金額怪怪點這裡)"):
+        with st.expander("🔍 查看「待結算」的詳細課程 (覺得怪怪點這裡)"):
             if not pending_df.empty:
                 # 為了顯示好看，我們要把學生名字找出來
                 df_stu = get_data("students")
@@ -223,7 +223,7 @@ with tab1:
     else:
         st.info("尚無資料，請先至「📅 排課」分頁新增課程。")
 
-# ================= Tab 2: 排課 (點擊日曆可直接刪除版) =================
+# ================= Tab 2: 排課 (加入載入動畫版) =================
 with tab2:
     df_stu = get_data("students")
     df_sess = get_data("sessions")
@@ -242,7 +242,6 @@ with tab2:
 
         if not row.empty:
             row = row.iloc[0]
-            # 解析舊資料
             s_dt = pd.to_datetime(row['start_time'])
             e_dt = pd.to_datetime(row['end_time'])
             cur_sid = int(row['student_id'])
@@ -253,70 +252,60 @@ with tab2:
             with st.container(border=True):
                 st.info(f"正在編輯：**{s_name}** - {s_dt.strftime('%m/%d %H:%M')}")
 
-                # --- 1. 編輯表單 ---
                 with st.form(key=f"edit_form_{edit_id}"):
                     c1, c2 = st.columns(2)
-                    # 學生選單
                     s_idx = list(student_map.keys()).index(s_name) if s_name in student_map else 0
                     edit_stu = c1.selectbox("學生", list(student_map.keys()), index=s_idx)
                     edit_date = c2.date_input("日期", s_dt.date())
-
                     c3, c4 = st.columns(2)
                     edit_time = c3.time_input("時間", s_dt.time())
                     old_dur = (e_dt - s_dt).total_seconds() / 3600
                     edit_dur = c4.slider("時數", 0.5, 3.0, float(old_dur), 0.5)
-
                     edit_prog = st.text_area("當日進度", value=old_prog)
-
-                    # 儲存按鈕 (這是表單的送出鍵)
                     submit_save = st.form_submit_button("💾 儲存變更", type="primary")
 
-                # --- 2. 刪除與取消區 (放在表單外面以免誤觸) ---
                 col_del, col_cancel = st.columns([1, 1])
 
-                # 🗑️ 刪除按鈕 (這裡就是你要的功能！)
+                # 🗑️ 刪除按鈕
                 if col_del.button("🗑️ 刪除此課程", key="btn_del_direct"):
-                    # 1. 如果有連動日曆，先刪除 Google 日曆活動
-                    if pd.notna(gid) and str(gid) != "" and service:
-                        delete_google_event(gid)
+                    with st.spinner("正在刪除中..."):  # ⏳ 加入動畫
+                        if pd.notna(gid) and str(gid) != "" and service:
+                            delete_google_event(gid)
+                        df_sess = df_sess[df_sess['id'] != edit_id]
+                        update_data("sessions", df_sess)
+                        time.sleep(1)  # 稍微緩衝，確保 Sheet 寫入完成
 
-                    # 2. 刪除資料庫紀錄
-                    df_sess = df_sess[df_sess['id'] != edit_id]
-                    update_data("sessions", df_sess)
-
-                    # 3. 重置狀態並重整
                     st.session_state.edit_session_id = None
                     st.toast("🗑️ 課程已刪除")
-                    time.sleep(1)
                     st.rerun()
 
-                # ❌ 取消按鈕
                 if col_cancel.button("❌ 取消返回"):
                     st.session_state.edit_session_id = None
                     st.rerun()
 
-                # --- 儲存邏輯處理 ---
+                # 💾 儲存邏輯
                 if submit_save:
-                    new_start = datetime.combine(edit_date, edit_time)
-                    new_end = new_start + timedelta(hours=edit_dur)
-                    new_sid = student_map[edit_stu]
-                    rate = int(df_stu[df_stu['id'] == new_sid]['default_rate'].values[0])
+                    with st.spinner("正在同步資料到 Google..."):  # ⏳ 加入動畫
+                        new_start = datetime.combine(edit_date, edit_time)
+                        new_end = new_start + timedelta(hours=edit_dur)
+                        new_sid = student_map[edit_stu]
+                        rate = int(df_stu[df_stu['id'] == new_sid]['default_rate'].values[0])
 
-                    # 更新資料
-                    idx = df_sess[df_sess['id'] == edit_id].index
-                    df_sess.loc[idx, ['student_id', 'start_time', 'end_time', 'actual_rate', 'progress']] = \
-                        [new_sid, new_start.strftime('%Y-%m-%dT%H:%M:%S'), new_end.strftime('%Y-%m-%dT%H:%M:%S'), rate,
-                         edit_prog]
+                        idx = df_sess[df_sess['id'] == edit_id].index
+                        df_sess.loc[idx, ['student_id', 'start_time', 'end_time', 'actual_rate', 'progress']] = \
+                            [new_sid, new_start.strftime('%Y-%m-%dT%H:%M:%S'), new_end.strftime('%Y-%m-%dT%H:%M:%S'),
+                             rate, edit_prog]
 
-                    # 更新日曆
-                    if gid and service: update_google_event(gid, f"家教: {edit_stu}", new_start, new_end)
+                        if gid and service: update_google_event(gid, f"家教: {edit_stu}", new_start, new_end)
 
-                    update_data("sessions", df_sess)
+                        update_data("sessions", df_sess)
+                        time.sleep(1.5)  # 稍微加長緩衝時間，確保資料回來
+
                     st.session_state.edit_session_id = None
                     st.success("更新成功！")
                     st.rerun()
         else:
-            st.error("查無此課程，可能已被刪除。")
+            st.error("查無此課程")
             st.session_state.edit_session_id = None
             st.rerun()
 
@@ -334,35 +323,36 @@ with tab2:
                     c3, c4 = st.columns(2)
                     t_input = c3.time_input("開始", datetime.now().replace(minute=0, second=0))
                     dur = c4.slider("時數", 0.5, 3.0, 1.5, 0.5)
-
                     do_sync = st.checkbox("🔄 同步至 Google 日曆", value=False)
                     n_prog = st.text_area("預定進度")
-
                     add_submit = st.form_submit_button("✅ 新增課程", type="primary")
 
                 if add_submit:
-                    start_p = datetime.combine(d_input, t_input)
-                    end_p = start_p + timedelta(hours=dur)
-                    sid = student_map[sel_stu]
-                    rate = int(df_stu[df_stu['id'] == sid]['default_rate'].values[0])
+                    # ⏳ 加入動畫，讓使用者知道「我有在動，請稍等」
+                    with st.spinner("正在寫入 Google 日曆與試算表..."):
+                        start_p = datetime.combine(d_input, t_input)
+                        end_p = start_p + timedelta(hours=dur)
+                        sid = student_map[sel_stu]
+                        rate = int(df_stu[df_stu['id'] == sid]['default_rate'].values[0])
 
-                    g_id = ""
-                    if do_sync and service:
-                        g_id = create_google_event(f"家教: {sel_stu}", start_p, end_p)
+                        g_id = ""
+                        if do_sync and service:
+                            g_id = create_google_event(f"家教: {sel_stu}", start_p, end_p)
 
-                    new_row = pd.DataFrame([{
-                        'id': int(df_sess['id'].max() + 1) if not df_sess.empty else 1,
-                        'student_id': sid,
-                        'start_time': start_p.strftime('%Y-%m-%dT%H:%M:%S'),
-                        'end_time': end_p.strftime('%Y-%m-%dT%H:%M:%S'),
-                        'status': '已完成' if start_p < datetime.now() else '已預約',
-                        'actual_rate': rate,
-                        'google_event_id': g_id,
-                        'progress': n_prog
-                    }])
-                    update_data("sessions", pd.concat([df_sess, new_row], ignore_index=True))
+                        new_row = pd.DataFrame([{
+                            'id': int(df_sess['id'].max() + 1) if not df_sess.empty else 1,
+                            'student_id': sid,
+                            'start_time': start_p.strftime('%Y-%m-%dT%H:%M:%S'),
+                            'end_time': end_p.strftime('%Y-%m-%dT%H:%M:%S'),
+                            'status': '已完成' if start_p < datetime.now() else '已預約',
+                            'actual_rate': rate,
+                            'google_event_id': g_id,
+                            'progress': n_prog
+                        }])
+                        update_data("sessions", pd.concat([df_sess, new_row], ignore_index=True))
+                        time.sleep(1.5)  # 給 Google Sheet 一點時間喘口氣
+
                     st.success("已新增！")
-                    time.sleep(1)
                     st.rerun()
 
     # ==========================
@@ -401,53 +391,39 @@ with tab2:
         "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek,listMonth"},
         "height": 650,
     }
-    cal = calendar(events=events, options=calendar_options, callbacks=['eventClick'], key="cal_v_del")
+    cal = calendar(events=events, options=calendar_options, callbacks=['eventClick'], key="cal_v_final")
 
-    # 點擊日曆 -> 進入編輯模式
     if cal.get("eventClick"):
         cid = int(cal["eventClick"]["event"]["id"])
         if st.session_state.edit_session_id != cid:
             st.session_state.edit_session_id = cid
             st.rerun()
 
-        # ======================================================
-        # C. 詳細列表 (手機版優化：按鈕更緊湊)
-        # ======================================================
-        with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
-            if not df_sess.empty:
-                df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
-                                                                                                        ascending=False).head(
-                    20)
-
-                for _, row in df_display.iterrows():
-                    sid = int(row['id_x'])
-                    gid = row.get('google_event_id', "")
-                    connected = pd.notna(gid) and str(gid) != ""
-
-                    with st.container(border=True):
-                        # 🔧 修改重點：
-                        # 1. 使用 gap="small" 縮小間距
-                        # 2. 比例改成 [6, 1, 1] -> 讓文字區最大，按鈕區只留一點點位置
-                        c1, c2, c3 = st.columns([6, 1, 1], gap="small")
-
-                        # 文字區 (垂直置中顯示)
-                        c1.markdown(f"**{row['name']}**")
-                        c1.caption(
-                            f"{pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')} {' (✅已同步)' if connected else ''}")
-
-                        # 編輯按鈕 (✏️)
-                        with c2:
-                            if st.button("✏️", key=f"ed{sid}", help="編輯"):
-                                st.session_state.edit_session_id = sid
-                                st.rerun()
-
-                        # 刪除按鈕 (🗑️)
-                        with c3:
-                            if st.button("🗑️", key=f"del{sid}", help="刪除"):
-                                if connected: delete_google_event(gid)
-                                df_sess = df_sess[df_sess['id'].astype(int) != sid]
-                                update_data("sessions", df_sess)
-                                st.rerun()
+    # C. 詳細列表 (手機版優化)
+    with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
+        if not df_sess.empty:
+            df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time',
+                                                                                                    ascending=False).head(
+                20)
+            for _, row in df_display.iterrows():
+                sid = int(row['id_x'])
+                gid = row.get('google_event_id', "")
+                connected = pd.notna(gid) and str(gid) != ""
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([6, 1, 1], gap="small")
+                    c1.markdown(f"**{row['name']}**")
+                    c1.caption(
+                        f"{pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')} {'(✅已同步)' if connected else ''}")
+                    with c2:
+                        if st.button("✏️", key=f"ed{sid}"):
+                            st.session_state.edit_session_id = sid
+                            st.rerun()
+                    with c3:
+                        if st.button("🗑️", key=f"del{sid}"):
+                            if connected: delete_google_event(gid)
+                            df_sess = df_sess[df_sess['id'].astype(int) != sid]
+                            update_data("sessions", df_sess)
+                            st.rerun()
 # ================= Tab 3: 帳單 (分月結算版) =================
 with tab3:
     st.subheader("💰 帳單中心")
