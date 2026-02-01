@@ -483,9 +483,11 @@ with tab3:
     else:
         st.info("尚無帳單")
 
-# --- Tab 4: 學生 ---
+# ================= Tab 4: 學生戰情室 (歷程+文案生成版) =================
 with tab4:
-    st.subheader("🧑‍🎓 學生管理")
+    st.subheader("🧑‍🎓 學生戰情室")
+
+    # --- 新增學生區塊 (保持不變) ---
     with st.expander("➕ 新增學生"):
         with st.form("add_stu_form"):
             c1, c2 = st.columns(2)
@@ -501,16 +503,76 @@ with tab4:
                 update_data("students", pd.concat([df_stu, new_stu], ignore_index=True));
                 st.rerun()
 
-    if not df_stu.empty:
+    st.divider()
+
+    if not df_stu.empty and not df_sess.empty:
+        # 準備資料：把課程跟學生連起來
+        full_data = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
+        full_data['start_dt'] = pd.to_datetime(full_data['start_time'])
+
+        # 依學生顯示詳細資料
         for _, row in df_stu.iterrows():
+            sid = row['id']
+            s_name = row['name']
+
+            # 找出這個學生的所有課程
+            my_classes = full_data[full_data['student_id'] == sid].sort_values('start_dt', ascending=False)
+
+            # 計算簡單統計
+            total_count = len(my_classes)
+            next_class = my_classes[my_classes['start_dt'] >= datetime.now()].sort_values('start_dt').head(1)
+            next_class_str = next_class.iloc[0]['start_dt'].strftime('%m/%d %H:%M') if not next_class.empty else "無待辦課程"
+
             with st.container(border=True):
-                c_icon, c_info, c_del = st.columns([0.5, 4, 1])
+                # 標題區：姓名 + 下次上課時間
+                c_icon, c_info, c_action = st.columns([0.5, 4, 1.5])
                 c_icon.markdown(
-                    f'<div style="width:25px;height:25px;background-color:{row["color"]};border-radius:50%;margin-top:10px;"></div>',
+                    f'<div style="width:30px;height:30px;background-color:{row["color"]};border-radius:50%;margin-top:5px;"></div>',
                     unsafe_allow_html=True)
                 with c_info:
-                    st.markdown(f"**{row['name']}**");
-                    st.caption(f"💰 時薪：${row['default_rate']}")
-                if c_del.button("🗑️", key=f"ds_{row['id']}"):
-                    update_data("students", df_stu[df_stu['id'] != row['id']]);
+                    st.markdown(f"**{s_name}**")
+                    st.caption(f"📅 下次上課：{next_class_str} (累計 {total_count} 堂)")
+
+                # --- 功能 A: 學習歷程 (Progress) ---
+                with st.expander("📝 查看學習歷程 (過去進度)"):
+                    if not my_classes.empty:
+                        # 只顯示已過去的課程
+                        past_classes = my_classes[my_classes['start_dt'] < datetime.now()]
+                        if not past_classes.empty:
+                            for _, cls in past_classes.iterrows():
+                                st.markdown(f"**{cls['start_dt'].strftime('%Y/%m/%d')}**")
+                                st.text(cls['progress'] if cls['progress'] else "（無紀錄）")
+                                st.divider()
+                        else:
+                            st.info("尚無過去的上課紀錄")
+                    else:
+                        st.info("尚無課程資料")
+
+                # --- 功能 B: 文案生成器 (Copy & Paste) ---
+                with st.expander("💬 生成 Line 課表通知"):
+                    # 找出「未來」的課程
+                    future_classes = my_classes[my_classes['start_dt'] >= datetime.now()].sort_values('start_dt')
+
+                    if not future_classes.empty:
+                        msg_lines = [f"【{s_name} 課程預告】"]
+                        msg_lines.append(f"家長您好，以下是接下來的課程安排：\n")
+
+                        for _, cls in future_classes.iterrows():
+                            d_str = cls['start_dt'].strftime('%m/%d (%a)')
+                            t_str = cls['start_dt'].strftime('%H:%M')
+                            msg_lines.append(f"📌 {d_str} {t_str}")
+
+                        msg_lines.append(f"\n再請您確認時間，謝謝！")
+                        final_msg = "\n".join(msg_lines)
+
+                        st.text_area("複製下方文字傳給家長：", value=final_msg, height=200)
+                    else:
+                        st.warning("沒有未來的課程，無法生成預告。")
+
+                # 刪除按鈕 (藏得深一點以免誤觸)
+                if c_action.button("🗑️", key=f"ds_{sid}", help="刪除此學生"):
+                    update_data("students", df_stu[df_stu['id'] != sid]);
                     st.rerun()
+
+    elif df_stu.empty:
+        st.info("目前沒有學生，請先新增。")
