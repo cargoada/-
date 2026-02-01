@@ -394,3 +394,28 @@ with tab4:
                 if c_del.button("🗑️", key=f"ds_{row['id']}"):
                     update_data("students", df_stu[df_stu['id'] != row['id']])
                     st.rerun()
+
+    # 👇 測試專用：放在程式碼最下面
+st.divider()
+st.subheader("🔧 日曆連線測試區")
+if st.button("測試連線"):
+    if service:
+        try:
+            # 1. 測試讀取
+            colors = service.colors().get().execute()
+            st.success("✅ 1. 連線成功 (機器人活著)")
+
+            # 2. 測試寫入權限
+            test_event = {
+                'summary': '測試連線 (可刪除)',
+                'start': {'dateTime': datetime.now().isoformat(), 'timeZone': 'Asia/Taipei'},
+                'end': {'dateTime': (datetime.now() + timedelta(minutes=10)).isoformat(), 'timeZone': 'Asia/Taipei'},
+            }
+            res = service.events().insert(calendarId='primary', body=test_event).execute()
+            st.success(f"✅ 2. 寫入成功！請看日曆上有沒有出現「測試連線」")
+            st.json(res)
+        except Exception as e:
+            st.error(f"❌ 發生錯誤：{e}")
+            st.info("如果顯示 '403 Forbidden'，代表你沒開權限給機器人。")
+    else:
+        st.error("❌ Service 變數是空的 (Secrets 設定有錯)")
