@@ -72,7 +72,7 @@ except:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 3. 小幫手函式
+# 3. 小幫手函式 (🔥已加入自動補欄位功能)
 # ==========================================
 with st.sidebar:
     st.header(f"👤 您好，{CURRENT_USER}")
@@ -86,8 +86,15 @@ with st.sidebar:
 def get_data(worksheet_name):
     try:
         df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=600)
-        if 'id' in df.columns: df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+
+        # 1. 確保 ID 是數字
+        if 'id' in df.columns:
+            df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+
+        # 2. 自動補足缺失欄位 (這是解決 KeyError 的關鍵)
         if 'google_event_id' not in df.columns: df['google_event_id'] = ""
+        if 'note' not in df.columns: df['note'] = ""  # <--- 這裡會幫舊帳單補上備註欄位
+
         return df
     except:
         return pd.DataFrame()
@@ -152,14 +159,12 @@ with tab1:
     df_stu = get_data("students")
 
     if not df_sess.empty:
-        # 資料前處理
         df_sess['start_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
         df_sess['end_dt'] = pd.to_datetime(df_sess['end_time'], errors='coerce')
         df_sess['actual_rate'] = pd.to_numeric(df_sess['actual_rate'], errors='coerce').fillna(0)
         df_sess['amount'] = ((df_sess['end_dt'] - df_sess['start_dt']).dt.total_seconds() / 3600) * df_sess[
             'actual_rate']
 
-        # 待結算計算
         df_sess['safe_invoice_id'] = pd.to_numeric(df_sess['invoice_id'], errors='coerce').fillna(0).astype(int)
         current_time = datetime.now()
         pending_mask = (df_sess['end_dt'] < current_time) & (df_sess['safe_invoice_id'] == 0)
@@ -173,7 +178,6 @@ with tab1:
 
         st.divider()
 
-        # 圖表區
         if not df_stu.empty:
             chart_df = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
             chart_df['name'] = chart_df['name'].fillna("未知")
@@ -408,7 +412,7 @@ with tab2:
                             update_data("sessions", df_sess)
                             st.rerun()
 
-# --- Tab 3: 帳單 (分月結算版) ---
+# --- Tab 3: 帳單 (分月結算版 + 缺欄位修復) ---
 with tab3:
     st.subheader("💰 帳單中心")
     df_inv = get_data("invoices")
@@ -535,7 +539,6 @@ with tab4:
                     else:
                         st.info("尚無課程資料")
 
-                # 🔥 修改這裡：使用 code 區塊來達成一鍵複製
                 with st.expander("💬 生成 Line 課表通知"):
                     future_classes = my_classes[my_classes['start_dt'] >= datetime.now()].sort_values('start_dt')
 
@@ -550,7 +553,7 @@ with tab4:
                         final_msg = "\n".join(msg_lines)
 
                         st.caption("👇 點擊區塊右上角的📄圖示，即可一鍵複製")
-                        st.code(final_msg, language=None)  # language=None 會顯示純文字模式
+                        st.code(final_msg, language=None)
                     else:
                         st.warning("沒有未來的課程，無法生成預告。")
 
