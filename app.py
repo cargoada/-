@@ -72,7 +72,7 @@ except:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 3. 小幫手函式 (🔥已加入自動補欄位功能)
+# 3. 小幫手函式 (🔥已加入強力欄位修補)
 # ==========================================
 with st.sidebar:
     st.header(f"👤 您好，{CURRENT_USER}")
@@ -91,9 +91,18 @@ def get_data(worksheet_name):
         if 'id' in df.columns:
             df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
 
-        # 2. 自動補足缺失欄位 (這是解決 KeyError 的關鍵)
-        if 'google_event_id' not in df.columns: df['google_event_id'] = ""
-        if 'note' not in df.columns: df['note'] = ""  # <--- 這裡會幫舊帳單補上備註欄位
+        # 2. 強制補足缺失欄位 (防止 KeyError)
+        # 針對 sessions 表
+        if worksheet_name == "sessions":
+            if 'google_event_id' not in df.columns: df['google_event_id'] = ""
+            if 'progress' not in df.columns: df['progress'] = ""
+            if 'invoice_id' not in df.columns: df['invoice_id'] = 0
+
+        # 針對 invoices 表 (這是這次報錯的原因)
+        elif worksheet_name == "invoices":
+            if 'note' not in df.columns: df['note'] = ""
+            if 'created_at' not in df.columns: df['created_at'] = datetime.now().isoformat()  # 沒日期的話補現在時間
+            if 'is_paid' not in df.columns: df['is_paid'] = 0
 
         return df
     except:
@@ -449,6 +458,7 @@ with tab3:
 
     st.divider()
     if not df_inv.empty:
+        # 🔥 修復點：如果 created_at 不存在，get_data 已經補上，這裡就不會報錯了
         unpaid = df_inv[df_inv['is_paid'] == 0]
         if not unpaid.empty:
             df_disp = pd.merge(unpaid, df_stu, left_on='student_id', right_on='id', how='left').sort_values(
