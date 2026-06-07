@@ -150,8 +150,10 @@ with st.sidebar:
                 
                 df_to_del = df_sess[to_delete_mask].copy()
                 if not df_to_del.empty:
-                    df_to_del['start_dt'] = pd.to_datetime(df_to_del['start_time'])
-                    df_to_del['end_dt'] = pd.to_datetime(df_to_del['end_time'])
+                    df_to_del['start_dt'] = pd.to_datetime(df_to_del['start_time'], errors='coerce')
+                    df_to_del['end_dt'] = pd.to_datetime(df_to_del['end_time'], errors='coerce')
+                    df_to_del = df_to_del.dropna(subset=['start_dt', 'end_dt'])
+                    
                     df_to_del['amt'] = ((df_to_del['end_dt'] - df_to_del['start_dt']).dt.total_seconds() / 3600) * pd.to_numeric(df_to_del.get('actual_rate', 0))
                     deleted_revenue = df_to_del['amt'].sum()
                     
@@ -209,8 +211,11 @@ with tab1:
     hist_offset = pd.to_numeric(st.session_state.db_stats.get('cumulative_offset', pd.Series([0]))).iloc[0]
     
     if not df_sess.empty:
+        # 🔥 加入 errors='coerce' 防止 ValueError
         df_sess['start_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
         df_sess['end_dt'] = pd.to_datetime(df_sess['end_time'], errors='coerce')
+        df_sess = df_sess.dropna(subset=['start_dt', 'end_dt']) # 過濾無效日期
+        
         df_sess['actual_rate'] = pd.to_numeric(df_sess.get('actual_rate', 0), errors='coerce').fillna(0)
         df_sess['amount'] = ((df_sess['end_dt'] - df_sess['start_dt']).dt.total_seconds() / 3600) * df_sess['actual_rate']
         
@@ -261,58 +266,66 @@ with tab2:
         
         if not row.empty:
             row = row.iloc[0]
-            s_dt = pd.to_datetime(row['start_time'])
-            e_dt = pd.to_datetime(row['end_time'])
-            cur_sid = int(row['student_id'])
-            s_name = df_stu[df_stu['id'] == cur_sid]['name'].values[0] if cur_sid in df_stu['id'].values else "未知"
-            old_prog = row.get('progress', "")
-            gid = row.get('google_event_id', "")
+            # 🔥 安全轉換
+            s_dt = pd.to_datetime(row.get('start_time'), errors='coerce')
+            e_dt = pd.to_datetime(row.get('end_time'), errors='coerce')
             
-            with st.container(border=True):
-                st.info(f"正在編輯：**{s_name}** - {s_dt.strftime('%m/%d %H:%M')}")
-                with st.form(key=f"edit_form_{edit_id}"):
-                    c1, c2 = st.columns(2)
-                    s_idx = list(student_map.keys()).index(s_name) if s_name in student_map else 0
-                    edit_stu = c1.selectbox("學生", list(student_map.keys()), index=s_idx)
-                    edit_date = c2.date_input("日期", s_dt.date())
-                    c3, c4 = st.columns(2)
-                    edit_time = c3.time_input("時間", s_dt.time())
-                    old_dur = (e_dt - s_dt).total_seconds() / 3600
-                    edit_dur = c4.slider("時數", 0.5, 3.0, float(old_dur), 0.5)
-                    edit_prog = st.text_area("當日進度", value=old_prog)
-                    submit_save = st.form_submit_button("💾 儲存變更", type="primary")
-
-                col_del, col_cancel = st.columns([1, 1])
+            if pd.notna(s_dt) and pd.notna(e_dt):
+                cur_sid = int(row['student_id'])
+                s_name = df_stu[df_stu['id'] == cur_sid]['name'].values[0] if cur_sid in df_stu['id'].values else "未知"
+                old_prog = row.get('progress', "")
+                gid = row.get('google_event_id', "")
                 
-                if col_del.button("🗑️ 刪除此課程", key="btn_del_direct"):
-                    if pd.notna(gid) and str(gid) != "" and service: delete_google_event(gid)
-                    df_sess = df_sess[df_sess['id'] != edit_id]
-                    st.session_state.db_sess = df_sess
-                    push_to_cloud("sessions", df_sess)
-                    st.session_state.edit_session_id = None
-                    st.toast("🗑️ 課程已刪除", icon="✅")
-                    st.rerun()
+                with st.container(border=True):
+                    st.info(f"正在編輯：**{s_name}** - {s_dt.strftime('%m/%d %H:%M')}")
+                    with st.form(key=f"edit_form_{edit_id}"):
+                        c1, c2 = st.columns(2)
+                        s_idx = list(student_map.keys()).index(s_name) if s_name in student_map else 0
+                        edit_stu = c1.selectbox("學生", list(student_map.keys()), index=s_idx)
+                        edit_date = c2.date_input("日期", s_dt.date())
+                        c3, c4 = st.columns(2)
+                        edit_time = c3.time_input("時間", s_dt.time())
+                        old_dur = (e_dt - s_dt).total_seconds() / 3600
+                        edit_dur = c4.slider("時數", 0.5, 3.0, float(old_dur) if float(old_dur) >= 0.5 else 1.5, 0.5)
+                        edit_prog = st.text_area("當日進度", value=old_prog)
+                        submit_save = st.form_submit_button("💾 儲存變更", type="primary")
 
-                if col_cancel.button("❌ 取消返回"):
-                    st.session_state.edit_session_id = None
-                    st.rerun()
+                    col_del, col_cancel = st.columns([1, 1])
+                    
+                    if col_del.button("🗑️ 刪除此課程", key="btn_del_direct"):
+                        if pd.notna(gid) and str(gid) != "" and service: delete_google_event(gid)
+                        df_sess = df_sess[df_sess['id'] != edit_id]
+                        st.session_state.db_sess = df_sess
+                        push_to_cloud("sessions", df_sess)
+                        st.session_state.edit_session_id = None
+                        st.toast("🗑️ 課程已刪除", icon="✅")
+                        st.rerun()
 
-                if submit_save:
-                    new_start = datetime.combine(edit_date, edit_time)
-                    new_end = new_start + timedelta(hours=edit_dur)
-                    new_sid = student_map[edit_stu]
-                    rate = int(df_stu[df_stu['id'] == new_sid]['default_rate'].values[0])
-                    
-                    idx = df_sess[df_sess['id'] == edit_id].index
-                    df_sess.loc[idx, ['student_id', 'start_time', 'end_time', 'actual_rate', 'progress']] = \
-                        [new_sid, new_start.strftime('%Y-%m-%dT%H:%M:%S'), new_end.strftime('%Y-%m-%dT%H:%M:%S'), rate, edit_prog]
-                    
-                    if gid and service: update_google_event(gid, f"家教: {edit_stu}", new_start, new_end)
-                    
-                    st.session_state.db_sess = df_sess
-                    push_to_cloud("sessions", df_sess)
+                    if col_cancel.button("❌ 取消返回"):
+                        st.session_state.edit_session_id = None
+                        st.rerun()
+
+                    if submit_save:
+                        new_start = datetime.combine(edit_date, edit_time)
+                        new_end = new_start + timedelta(hours=edit_dur)
+                        new_sid = student_map[edit_stu]
+                        rate = int(df_stu[df_stu['id'] == new_sid]['default_rate'].values[0])
+                        
+                        idx = df_sess[df_sess['id'] == edit_id].index
+                        df_sess.loc[idx, ['student_id', 'start_time', 'end_time', 'actual_rate', 'progress']] = \
+                            [new_sid, new_start.strftime('%Y-%m-%dT%H:%M:%S'), new_end.strftime('%Y-%m-%dT%H:%M:%S'), rate, edit_prog]
+                        
+                        if gid and service: update_google_event(gid, f"家教: {edit_stu}", new_start, new_end)
+                        
+                        st.session_state.db_sess = df_sess
+                        push_to_cloud("sessions", df_sess)
+                        st.session_state.edit_session_id = None
+                        st.toast("💾 變更已儲存", icon="✅")
+                        st.rerun()
+            else:
+                st.error("此課程日期資料異常，無法編輯。請刪除後重新建立。")
+                if st.button("❌ 取消返回"):
                     st.session_state.edit_session_id = None
-                    st.toast("💾 變更已儲存", icon="✅")
                     st.rerun()
         else:
             st.session_state.edit_session_id = None
@@ -395,10 +408,15 @@ with tab2:
     if not df_sess.empty and not df_stu.empty:
         try:
             merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
+            # 確保日期可以正常解析
+            merged['s_dt_safe'] = pd.to_datetime(merged['start_time'], errors='coerce')
+            merged['e_dt_safe'] = pd.to_datetime(merged['end_time'], errors='coerce')
+            merged = merged.dropna(subset=['s_dt_safe', 'e_dt_safe'])
+            
             for _, row in merged.iterrows():
                 try:
-                    s_iso = pd.to_datetime(row['start_time']).isoformat()
-                    e_iso = pd.to_datetime(row['end_time']).isoformat()
+                    s_iso = row['s_dt_safe'].isoformat()
+                    e_iso = row['e_dt_safe'].isoformat()
                     events.append({
                         "id": str(row.get('id_x', "")), "title": row.get('name', ""),
                         "start": s_iso, "end": e_iso,
@@ -416,7 +434,10 @@ with tab2:
 
     with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
         if not df_sess.empty:
-            df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id').sort_values('start_time', ascending=False).head(20)
+            df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
+            df_display['sort_dt'] = pd.to_datetime(df_display['start_time'], errors='coerce')
+            df_display = df_display.dropna(subset=['sort_dt']).sort_values('sort_dt', ascending=False).head(20)
+            
             for _, row in df_display.iterrows():
                 sid = int(row.get('id_x', 0))
                 gid = row.get('google_event_id', "")
@@ -424,7 +445,7 @@ with tab2:
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([6, 1, 1], gap="small")
                     c1.markdown(f"**{row.get('name', '未知')}**")
-                    c1.caption(f"{pd.to_datetime(row['start_time']).strftime('%m/%d %H:%M')} {'(✅已同步)' if connected else ''}")
+                    c1.caption(f"{row['sort_dt'].strftime('%m/%d %H:%M')} {'(✅已同步)' if connected else ''}")
                     with c2:
                         if st.button("✏️", key=f"ed{sid}"): st.session_state.edit_session_id = sid; st.rerun()
                     with c3:
@@ -436,7 +457,7 @@ with tab2:
                             st.toast("已刪除！", icon="🗑️")
                             st.rerun()
 
-# ================= Tab 3: 帳單 (🔥升級：訊息一鍵複製) =================
+# ================= Tab 3: 帳單 =================
 with tab3:
     st.subheader("💰 帳單中心")
     df_inv = st.session_state.db_inv.copy()
@@ -445,16 +466,20 @@ with tab3:
     if st.button("⚡ 一鍵結算 (自動分月開單)", type="primary"):
         df_sess['end_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce') 
         df_sess['safe_inv'] = pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
+        
+        # 過濾不合法時間避免報錯
+        df_sess = df_sess.dropna(subset=['end_dt'])
+        
         mask = ((df_sess.get('status', '已完成') == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['safe_inv'] == 0)
         pending_df = df_sess[mask].copy()
         
         if not pending_df.empty:
-            pending_df['month_str'] = pd.to_datetime(pending_df['start_time']).dt.strftime('%Y-%m')
+            pending_df['month_str'] = pending_df['end_dt'].dt.strftime('%Y-%m')
             groups = pending_df.groupby(['student_id', 'month_str'])
             new_inv_count = 0
             
             for (sid, m_str), group in groups:
-                total_amt = sum(((pd.to_datetime(r['end_time']) - pd.to_datetime(r['start_time'])).total_seconds() / 3600) * int(r.get('actual_rate', 0)) for _, r in group.iterrows())
+                total_amt = sum(((pd.to_datetime(r['end_time'], errors='coerce') - pd.to_datetime(r['start_time'], errors='coerce')).total_seconds() / 3600) * int(r.get('actual_rate', 0)) for _, r in group.iterrows())
                 inv_id = int(df_inv['id'].max()) + 1 if not df_inv.empty else 1
                 new_inv = pd.DataFrame([{'id': inv_id, 'student_id': sid, 'total_amount': int(total_amt), 'created_at': datetime.now().isoformat(), 'is_paid': 0, 'note': m_str}])
                 df_inv = pd.concat([df_inv, new_inv], ignore_index=True)
@@ -476,7 +501,8 @@ with tab3:
         if not unpaid.empty:
             df_disp = pd.merge(unpaid, st.session_state.db_stu, left_on='student_id', right_on='id', how='left')
             if 'created_at' in df_disp.columns:
-                df_disp = df_disp.sort_values('created_at', ascending=False)
+                df_disp['sort_dt'] = pd.to_datetime(df_disp['created_at'], errors='coerce')
+                df_disp = df_disp.sort_values('sort_dt', ascending=False)
                 
             for _, row in df_disp.iterrows():
                 inv_id = row.get('id_x', 0)
@@ -496,17 +522,19 @@ with tab3:
                         st.toast("入帳成功！", icon="💵")
                         st.rerun()
                     
-                    # 🔥 大改版：一鍵複製 Line 訊息
                     with st.expander("💬 產生收費通知 (一鍵複製)"):
-                        my_ds = df_sess[pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce') == inv_id]
+                        my_ds = df_sess[pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce') == inv_id].copy()
                         if not my_ds.empty:
-                            my_ds = my_ds.sort_values('start_time')
+                            my_ds['start_dt_safe'] = pd.to_datetime(my_ds['start_time'], errors='coerce')
+                            my_ds['end_dt_safe'] = pd.to_datetime(my_ds['end_time'], errors='coerce')
+                            my_ds = my_ds.dropna(subset=['start_dt_safe', 'end_dt_safe']).sort_values('start_dt_safe')
+                            
                             msg_lines = [f"【{s_name} {bill_month} 課程費用明細】"]
                             msg_lines.append("家長您好，以下是本期課程的費用明細：\n")
                             
                             for _, r in my_ds.iterrows():
-                                dt_str = pd.to_datetime(r['start_time']).strftime('%m/%d')
-                                dur_h = (pd.to_datetime(r['end_time']) - pd.to_datetime(r['start_time'])).total_seconds() / 3600
+                                dt_str = r['start_dt_safe'].strftime('%m/%d')
+                                dur_h = (r['end_dt_safe'] - r['start_dt_safe']).total_seconds() / 3600
                                 amt = int(dur_h * r.get('actual_rate', 0))
                                 msg_lines.append(f"📌 {dt_str} ({dur_h:.1f} 小時) : ${amt:,}")
                                 
@@ -546,7 +574,11 @@ with tab4:
 
     if not df_stu.empty and not df_sess.empty:
         full_data = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
-        full_data['start_dt'] = pd.to_datetime(full_data['start_time'])
+        
+        # 🔥 加入 errors='coerce' 防止 ValueError
+        full_data['start_dt'] = pd.to_datetime(full_data['start_time'], errors='coerce')
+        full_data = full_data.dropna(subset=['start_dt']) # 剃除無效時間列
+        
         weekdays_tw = ["一", "二", "三", "四", "五", "六", "日"]
         
         for _, row in df_stu.iterrows():
@@ -572,8 +604,10 @@ with tab4:
 
                         st.write("🔍 **系統偵測到最近的上課模式：**")
                         for _, pc in pattern_classes.iterrows():
-                            dur_h = (pd.to_datetime(pc['end_time']) - pc['start_dt']).total_seconds() / 3600
-                            st.info(f"星期{weekdays_tw[pc['start_dt'].weekday()]} {pc['start_dt'].strftime('%H:%M')} ({dur_h:.1f} 小時)")
+                            pc_end = pd.to_datetime(pc['end_time'], errors='coerce')
+                            if pd.notna(pc_end):
+                                dur_h = (pc_end - pc['start_dt']).total_seconds() / 3600
+                                st.info(f"星期{weekdays_tw[pc['start_dt'].weekday()]} {pc['start_dt'].strftime('%H:%M')} ({dur_h:.1f} 小時)")
                         
                         c_ex1, c_ex2 = st.columns(2)
                         extend_weeks = c_ex1.number_input("要往後展延幾週？", min_value=1, max_value=12, value=4, key=f"wk_{sid}")
@@ -586,8 +620,11 @@ with tab4:
                                 
                                 for w in range(1, extend_weeks + 1):
                                     for _, pc in pattern_classes.iterrows():
+                                        pc_end = pd.to_datetime(pc['end_time'], errors='coerce')
+                                        if pd.isna(pc_end): continue
+                                        
                                         new_start = pc['start_dt'] + timedelta(weeks=w)
-                                        dur = (pd.to_datetime(pc['end_time']) - pc['start_dt']).total_seconds() / 3600
+                                        dur = (pc_end - pc['start_dt']).total_seconds() / 3600
                                         new_end = new_start + timedelta(hours=dur)
 
                                         g_id = ""
