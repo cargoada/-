@@ -10,7 +10,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 # ==========================================
-# 1. 系統設定 (請填入你的日曆信箱)
+# 1. 系統設定
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
 
@@ -89,7 +89,6 @@ def fetch_sheet_safe(worksheet_name):
 
         if 'id' in df.columns: df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
         
-        # 欄位補全
         if worksheet_name == "sessions":
             for col in ['google_event_id', 'progress', 'invoice_id']:
                 if col not in df.columns: df[col] = "" if col != 'invoice_id' else 0
@@ -119,7 +118,6 @@ def push_to_cloud(worksheet_name, df):
     except Exception as e:
         st.toast(f"⚠️ 雲端同步延遲: {e}")
 
-# --- 初始化載入 ---
 if CURRENT_USER and not st.session_state.data_loaded:
     sync_from_cloud()
 
@@ -145,7 +143,6 @@ with st.sidebar:
         if st.button("⚠️ 確認刪除並結轉收入", type="primary"):
             cutoff = datetime.now() - timedelta(days=months_to_keep * 30)
             
-            # 1. 處理 Sessions (計算被刪除的收入)
             df_sess = st.session_state.db_sess.copy()
             if not df_sess.empty:
                 df_sess['temp_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
@@ -439,7 +436,7 @@ with tab2:
                             st.toast("已刪除！", icon="🗑️")
                             st.rerun()
 
-# ================= Tab 3: 帳單 =================
+# ================= Tab 3: 帳單 (🔥升級：訊息一鍵複製) =================
 with tab3:
     st.subheader("💰 帳單中心")
     df_inv = st.session_state.db_inv.copy()
@@ -498,13 +495,29 @@ with tab3:
                         push_to_cloud("invoices", df_inv)
                         st.toast("入帳成功！", icon="💵")
                         st.rerun()
-                    with st.expander("📄 明細"):
+                    
+                    # 🔥 大改版：一鍵複製 Line 訊息
+                    with st.expander("💬 產生收費通知 (一鍵複製)"):
                         my_ds = df_sess[pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce') == inv_id]
                         if not my_ds.empty:
-                            show = [{"日期": pd.to_datetime(r['start_time']).strftime('%m/%d'), "時數": f"{((pd.to_datetime(r['end_time'])-pd.to_datetime(r['start_time'])).total_seconds()/3600):.1f}", "金額": int(((pd.to_datetime(r['end_time'])-pd.to_datetime(r['start_time'])).total_seconds()/3600)*r.get('actual_rate', 0))} for _, r in my_ds.iterrows()]
-                            st.table(pd.DataFrame(show))
-                            csv = pd.DataFrame(show).to_csv(index=False).encode('utf-8-sig')
-                            st.download_button("📥 下載", csv, f"帳單_{inv_id}.csv", "text/csv", key=f"dl_{inv_id}")
+                            my_ds = my_ds.sort_values('start_time')
+                            msg_lines = [f"【{s_name} {bill_month} 課程費用明細】"]
+                            msg_lines.append("家長您好，以下是本期課程的費用明細：\n")
+                            
+                            for _, r in my_ds.iterrows():
+                                dt_str = pd.to_datetime(r['start_time']).strftime('%m/%d')
+                                dur_h = (pd.to_datetime(r['end_time']) - pd.to_datetime(r['start_time'])).total_seconds() / 3600
+                                amt = int(dur_h * r.get('actual_rate', 0))
+                                msg_lines.append(f"📌 {dt_str} ({dur_h:.1f} 小時) : ${amt:,}")
+                                
+                            msg_lines.append(f"\n💰 總計金額：${total_amt:,}")
+                            msg_lines.append("再麻煩您留意，謝謝！")
+                            
+                            final_msg = "\n".join(msg_lines)
+                            st.caption("👇 點擊區塊右上角的📄圖示，即可一鍵複製傳給家長")
+                            st.code(final_msg, language=None)
+                        else:
+                            st.info("找不到此帳單的課程明細")
         else:
             st.info("🎉 帳單全數結清！")
     else:
@@ -534,6 +547,7 @@ with tab4:
     if not df_stu.empty and not df_sess.empty:
         full_data = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
         full_data['start_dt'] = pd.to_datetime(full_data['start_time'])
+        weekdays_tw = ["一", "二", "三", "四", "五", "六", "日"]
         
         for _, row in df_stu.iterrows():
             sid = row['id']
@@ -550,6 +564,59 @@ with tab4:
                     st.markdown(f"**{s_name}**")
                     st.caption(f"📅 下次上課：{next_class_str} (累計 {total_count} 堂)")
                 
+                with st.expander("🪄 智慧續排 (一鍵展延下個月)"):
+                    if not my_classes.empty:
+                        last_dt = my_classes['start_dt'].max()
+                        start_of_last_week = last_dt - timedelta(days=6)
+                        pattern_classes = my_classes[(my_classes['start_dt'] >= start_of_last_week) & (my_classes['start_dt'] <= last_dt)].sort_values('start_dt')
+
+                        st.write("🔍 **系統偵測到最近的上課模式：**")
+                        for _, pc in pattern_classes.iterrows():
+                            dur_h = (pd.to_datetime(pc['end_time']) - pc['start_dt']).total_seconds() / 3600
+                            st.info(f"星期{weekdays_tw[pc['start_dt'].weekday()]} {pc['start_dt'].strftime('%H:%M')} ({dur_h:.1f} 小時)")
+                        
+                        c_ex1, c_ex2 = st.columns(2)
+                        extend_weeks = c_ex1.number_input("要往後展延幾週？", min_value=1, max_value=12, value=4, key=f"wk_{sid}")
+                        do_sync = c_ex2.checkbox("🔄 同步至 Google 日曆", value=True, key=f"sync_{sid}")
+
+                        if st.button("🚀 確定一鍵展延", key=f"btn_renew_{sid}", type="primary"):
+                            with st.spinner("自動排課中..."):
+                                new_rows = []
+                                rate = row.get('default_rate', 500)
+                                
+                                for w in range(1, extend_weeks + 1):
+                                    for _, pc in pattern_classes.iterrows():
+                                        new_start = pc['start_dt'] + timedelta(weeks=w)
+                                        dur = (pd.to_datetime(pc['end_time']) - pc['start_dt']).total_seconds() / 3600
+                                        new_end = new_start + timedelta(hours=dur)
+
+                                        g_id = ""
+                                        if do_sync and service:
+                                            g_id = create_google_event(f"家教: {s_name}", new_start, new_end)
+                                            time.sleep(0.3)
+
+                                        new_rows.append({
+                                            'id': int(st.session_state.db_sess['id'].max() + len(new_rows) + 1) if not st.session_state.db_sess.empty else len(new_rows) + 1,
+                                            'student_id': sid,
+                                            'start_time': new_start.strftime('%Y-%m-%dT%H:%M:%S'),
+                                            'end_time': new_end.strftime('%Y-%m-%dT%H:%M:%S'),
+                                            'status': '已預約',
+                                            'actual_rate': rate,
+                                            'google_event_id': g_id,
+                                            'progress': "",
+                                            'invoice_id': 0
+                                        })
+
+                                if new_rows:
+                                    st.session_state.db_sess = pd.concat([st.session_state.db_sess, pd.DataFrame(new_rows)], ignore_index=True)
+                                    push_to_cloud("sessions", st.session_state.db_sess)
+
+                                st.toast("✅ 課表展延成功！", icon="🎉")
+                                time.sleep(1)
+                                st.rerun()
+                    else:
+                        st.info("該學生尚無上課紀錄，請先在「排課」手動新增一次，系統才能學習模式喔！")
+
                 with st.expander("📝 查看學習歷程 (過去進度)"):
                     if not my_classes.empty:
                         past_classes = my_classes[my_classes['start_dt'] < datetime.now()]
