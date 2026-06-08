@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
 
-st.set_page_config(page_title="家教排課系統 v2.3", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v2.4", page_icon="📅", layout="centered")
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
@@ -36,7 +36,7 @@ except:
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 2.3")
+    st.title("👋 歡迎使用排課系統 2.4")
     if "users" in st.secrets:
         user_dict = st.secrets["users"]
         selected_login = st.selectbox("請選擇您的身分", list(user_dict.keys()))
@@ -136,15 +136,20 @@ df_sess = get_cloud_data("sessions")
 df_inv = get_cloud_data("invoices")
 df_stats = get_cloud_data("stats")
 
-# 建立超級字典，取代 Pandas 複雜的 Merge，避免報錯
+# 建立超級雙向識別字典，避免任何型態不合或名字對不上的報錯
 student_name_map = {}
 student_rate_map = {}
 student_color_map = {}
+student_name_to_id = {}
+
 if not df_stu.empty and 'id' in df_stu.columns:
     for _, r in df_stu.iterrows():
         s_id = str(r['id']).split('.')[0]
-        student_name_map[s_id] = r.get('name', '未知')
+        s_name = str(r.get('name', '')).strip()
+        student_name_map[s_id] = s_name
         student_color_map[s_id] = r.get('color', '#3498DB')
+        if s_name:
+            student_name_to_id[s_name] = s_id
         try: student_rate_map[s_id] = int(r.get('default_rate', 500))
         except: student_rate_map[s_id] = 500
 
@@ -169,26 +174,24 @@ with tab1:
         if not df_sess.empty:
             df_cal_check = df_sess.copy()
             df_cal_check['start_dt_safe'] = pd.to_datetime(df_cal_check['start_time'], errors='coerce')
-            df_cal_check['end_dt_safe'] = pd.to_datetime(df_cal_check['end_time'], errors='coerce')
-            df_cal_check = df_cal_check.dropna(subset=['start_dt_safe', 'end_dt_safe'])
+            df_cal_check = df_cal_check.dropna(subset=['start_dt_safe'])
             
             target_date_str = cal_date.strftime('%Y-%m-%d')
-            # 排除已取消的課程
             df_today_lessons = df_cal_check[(df_cal_check['start_dt_safe'].dt.strftime('%Y-%m-%d') == target_date_str) & (df_cal_check['status'] != '已取消')]
             df_today_lessons = df_today_lessons.sort_values('start_dt_safe')
             
             st.markdown(f"**🔍 {cal_date.strftime('%m/%d')} 當日課表明細：**")
             if not df_today_lessons.empty:
                 for _, l_row in df_today_lessons.iterrows():
-                    l_sid = str(l_row['student_id']).split('.')[0]
-                    l_name = student_name_map.get(l_sid, "未知學生")
-                    l_color = student_color_map.get(l_sid, "#3498DB")
-                    s_time = l_row['start_dt_safe'].strftime('%H:%M')
-                    e_time = l_row['end_dt_safe'].strftime('%H:%M')
+                    raw_sid = str(l_row['student_id']).strip().split('.')[0]
+                    s_id_str = student_name_to_id.get(raw_sid, raw_sid)
+                    l_name = student_name_map.get(s_id_str, "未知學生")
+                    l_color = student_color_map.get(s_id_str, "#3498DB")
                     
-                    st.markdown(f"▶️ `<span style='color:{l_color};'>●</span>` **{s_time} - {e_time}** │ 🧑‍🎓 **{l_name}** {'(請假)' if l_row.get('status') == '請假' else ''}", unsafe_allow_html=True)
+                    s_time = l_row['start_dt_safe'].strftime('%H:%M')
+                    st.markdown(f"▶️ `<span style='color:{l_color};'>●</span>` **{s_time}** │ 🧑‍🎓 **{l_name}** {'(請假)' if l_row.get('status') == '請假' else ''}", unsafe_allow_html=True)
                     if l_row.get('progress', ""):
-                        st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;🏷️ 備註：{l_row['progress']}")
+                        st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;🏷 *備註：{l_row['progress']}")
             else:
                 st.write("🏝️ 這天目前沒有排課，好好休息一下吧！")
         else:
@@ -206,8 +209,9 @@ with tab1:
         df_calc = df_sess.copy()
         df_calc['start_dt'] = pd.to_datetime(df_calc['start_time'], errors='coerce')
         df_calc['end_dt'] = pd.to_datetime(df_calc['end_time'], errors='coerce')
-        df_calc = df_calc.dropna(subset=['start_dt', 'end_dt'])
-        # 排除取消與請假的課不算錢
+        df_calc = df_calc.dropna(subset=['start_dt'])
+        # 補全空白的結束時間防止算薪水出錯
+        df_calc['end_dt'] = df_calc['end_dt'].fillna(df_calc['start_dt'] + timedelta(hours=1.5))
         df_calc = df_calc[~df_calc['status'].isin(['請假', '已取消'])]
         
         if not df_calc.empty:
@@ -342,31 +346,32 @@ with tab2:
                             st.success(f"🎉 成功！已自動在區間內建立 {len(new_lessons_bulk)} 堂課程。")
                             time.sleep(1)
                             st.rerun()
-                        else:
-                            st.warning("⚠️ 檢查範圍後發現，該日期區間內沒有包含您選取的星期天數喔！")
 
+    # --- 🔥 核心修復：未來無限視野與時間容錯解析 ---
     st.divider()
-    st.subheader("📋 課表列表總覽 (單堂調課/請假)")
+    st.subheader("📋 未來所有課表總覽 (調課/請假中心)")
     
     if not df_sess.empty:
         df_list = df_sess.copy()
         df_list['dt_order'] = pd.to_datetime(df_list['start_time'], errors='coerce')
         df_list['dt_end_order'] = pd.to_datetime(df_list['end_time'], errors='coerce')
-        df_list = df_list.dropna(subset=['dt_order', 'dt_end_order'])
+        
+        # 💡 防爆點 1：如果結束時間損壞或空白，自動用開始時間補齊 1.5 小時，絕不丟失行數
+        df_list['dt_end_order'] = df_list['dt_end_order'].fillna(df_list['dt_order'] + timedelta(hours=1.5))
+        df_list = df_list.dropna(subset=['dt_order']) # 只要開始時間對，就強迫抓出來
         
         now_time = datetime.now()
-        two_weeks_later = now_time + timedelta(days=14)
-        
-        df_filtered = df_list[(df_list['dt_end_order'] >= now_time) & (df_list['dt_order'] <= two_weeks_later)]
+        df_filtered = df_list[df_list['dt_end_order'] >= now_time]
         df_filtered = df_filtered.sort_values('dt_order', ascending=True)
         
         if not df_filtered.empty:
             for idx, row in df_filtered.iterrows():
-                s_id_str = str(row['student_id']).split('.')[0]
+                raw_sid = str(row['student_id']).strip().split('.')[0]
+                # 💡 防爆點 2：雙向對照，不管是名字還是 ID 都能完美對應
+                s_id_str = student_name_to_id.get(raw_sid, raw_sid)
                 name_display = student_name_map.get(s_id_str, "未知學生")
                 color_display = student_color_map.get(s_id_str, "#3498DB")
                 
-                # 面板標題顯示資訊
                 status_icon = "⚠️ (請假)" if row.get('status') == "請假" else "❌ (取消)" if row.get('status') == "已取消" else ""
                 panel_title = f"{row['dt_order'].strftime('%m/%d %H:%M')} │ 🧑‍🎓 {name_display} {status_icon}"
                 
@@ -375,16 +380,14 @@ with tab2:
                         n_dt = st.date_input("日期", row['dt_order'].date())
                         n_st = st.time_input("開始時間", row['dt_order'].time())
                         old_dur = (row['dt_end_order'] - row['dt_order']).total_seconds() / 3600
-                        n_dur = st.slider("時數", 0.5, 4.0, float(old_dur) if float(old_dur)>=0.5 else 1.5, 0.5, key=f"d_{row['id']}")
+                        n_dur = st.slider("時數", 0.5, 4.0, float(old_dur) if float(old_dur).is_integer() else 1.5, 0.5, key=f"d_{row['id']}")
                         
                         curr_status = row.get('status', '已預約')
                         if curr_status not in ["已預約", "請假", "已取消", "已完成"]: curr_status = "已預約"
                         n_stt = st.selectbox("狀態", ["已預約", "請假", "已取消", "已完成"], index=["已預約", "請假", "已取消", "已完成"].index(curr_status))
                         n_prog = st.text_area("進度/備註", value=row.get('progress', ''))
                         
-                        col_upd, col_del = st.columns([3, 1])
-                        
-                        if col_upd.form_submit_button("💾 更新此堂課", type="primary"):
+                        if st.form_submit_button("💾 更新此堂課", type="primary"):
                             n_start_dt = datetime.combine(n_dt, n_st)
                             n_end_dt = n_start_dt + timedelta(hours=n_dur)
                             
@@ -399,7 +402,7 @@ with tab2:
                                     delete_google_event(gid)
                                     df_sess.loc[df_sess['id']==row['id'], 'google_event_id'] = ""
                             else:
-                                if gid: # 只有調課，同步更新日曆
+                                if gid:
                                     update_google_event(gid, f"家教: {name_display}", n_start_dt, n_end_dt)
                                     
                             save_to_cloud("sessions", df_sess)
@@ -412,7 +415,7 @@ with tab2:
                         save_to_cloud("sessions", df_sess)
                         st.rerun()
         else:
-            st.info("🎯 未來兩週內目前沒有排課行程。")
+            st.info("🎯 目前沒有任何未來的排課行程。")
     else:
         st.info("目前沒有任何排課紀錄。")
 
@@ -427,9 +430,7 @@ with tab3:
             df_sess['inv_safe'] = pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
             now = datetime.now()
             
-            # 過濾掉請假與取消的課
-            mask_status = ~df_sess['status'].isin(['請假', '已取消'])
-            pending_mask = mask_status & (df_sess['dt_safe'] < now) & (df_sess['inv_safe'] == 0)
+            pending_mask = (~df_sess['status'].isin(['請假', '已取消'])) & (df_sess['dt_safe'] < now) & (df_sess['inv_safe'] == 0)
             df_pending = df_sess[pending_mask].copy()
             
             if not df_pending.empty:
@@ -443,7 +444,10 @@ with tab3:
                     total_bill_amt = 0
                     for _, r in group.iterrows():
                         try:
-                            h = (pd.to_datetime(r['end_time']) - pd.to_datetime(r['start_time'])).total_seconds() / 3600
+                            s_time_p = pd.to_datetime(r['start_time'])
+                            e_time_p = pd.to_datetime(r['end_time'], errors='coerce')
+                            if pd.isna(e_time_p): e_time_p = s_time_p + timedelta(hours=1.5)
+                            h = (e_time_p - s_time_p).total_seconds() / 3600
                             total_bill_amt += h * int(r.get('actual_rate', 500))
                         except: pass
                     
@@ -470,7 +474,8 @@ with tab3:
         df_unpaid = df_inv[pd.to_numeric(df_inv['is_paid'], errors='coerce').fillna(0) == 0]
         if not df_unpaid.empty:
             for _, row in df_unpaid.iterrows():
-                s_id_str = str(row['student_id']).split('.')[0]
+                raw_sid = str(row['student_id']).strip().split('.')[0]
+                s_id_str = student_name_to_id.get(raw_sid, raw_sid)
                 s_name = student_name_map.get(s_id_str, "未知學生")
                 bill_month = row.get('note', '未知月份')
                 
@@ -495,7 +500,9 @@ with tab3:
                                 msg = [f"【{s_name} {bill_month} 課程費用明細】\n家長您好，以下是本期課程的費用明細：\n"]
                                 for _, ls in my_lessons.iterrows():
                                     dt_safe = ls['dt_safe'].strftime('%m/%d')
-                                    h_safe = (pd.to_datetime(ls['end_time']) - ls['dt_safe']).total_seconds() / 3600
+                                    ls_end = pd.to_datetime(ls.get('end_time'), errors='coerce')
+                                    if pd.isna(ls_end): ls_end = ls['dt_safe'] + timedelta(hours=1.5)
+                                    h_safe = (ls_end - ls['dt_safe']).total_seconds() / 3600
                                     cost = int(h_safe * int(ls.get('actual_rate', 500)))
                                     msg.append(f"📌 {dt_safe} ({h_safe:.1f}小時) : ${cost:,}")
                                 msg.append(f"\n總計金額：${int(row['total_amount'])}元")
@@ -540,8 +547,9 @@ with tab4:
             
             my_all_lessons = pd.DataFrame()
             if not df_sess.empty and 'student_id' in df_sess.columns:
-                df_sess['sid_str'] = df_sess['student_id'].astype(str).str.split('.').str[0]
-                my_all_lessons = df_sess[df_sess['sid_str'] == s_id_str].copy()
+                # 智慧全向過濾：支援直接用名字或 ID 作為篩選條件
+                df_sess['resolved_sid'] = df_sess['student_id'].astype(str).str.strip().str.split('.').str[0].map(lambda x: student_name_to_id.get(x, x))
+                my_all_lessons = df_sess[df_sess['resolved_sid'] == s_id_str].copy()
             
             with st.container(border=True):
                 col_c, col_n, col_act = st.columns([0.5, 4, 1.5])
@@ -566,7 +574,9 @@ with tab4:
                                 st.write("💡 系統偵測到該生最後一週的上課模式：")
                                 for _, w_ls in week_pattern.iterrows():
                                     try:
-                                        h_diff = (pd.to_datetime(w_ls['end_time']) - pd.to_datetime(w_ls['start_time'])).total_seconds() / 3600
+                                        ls_end_p = pd.to_datetime(w_ls.get('end_time'), errors='coerce')
+                                        if pd.isna(ls_end_p): ls_end_p = w_ls['dt_safe'] + timedelta(hours=1.5)
+                                        h_diff = (ls_end_p - w_ls['dt_safe']).total_seconds() / 3600
                                         st.caption(f"📅 星期{weekdays_tw[w_ls['dt_safe'].weekday()]} {w_ls['dt_safe'].strftime('%H:%M')} ({h_diff:.1f} 小時)")
                                     except: pass
                                 
@@ -581,7 +591,9 @@ with tab4:
                                         for _, p_ls in week_pattern.iterrows():
                                             try:
                                                 p_start = pd.to_datetime(p_ls['start_time'])
-                                                p_end = pd.to_datetime(p_ls['end_time'])
+                                                p_end = pd.to_datetime(p_ls['end_time'], errors='coerce')
+                                                if pd.isna(p_end): p_end = p_start + timedelta(hours=1.5)
+                                                
                                                 new_s = p_start + timedelta(weeks=week_idx)
                                                 new_e = p_end + timedelta(weeks=week_idx)
                                                 
@@ -591,8 +603,7 @@ with tab4:
                                                     time.sleep(0.15)
                                                     
                                                 new_lessons_list.append({
-                                                    'id': max_sess_id + len(new_lessons_list) + 1,
-                                                    'student_id': s_id_str,
+                                                    'id': max_sess_id + len(new_lessons_list) + 1, 'student_id': s_id_str,
                                                     'start_time': new_s.strftime('%Y-%m-%dT%H:%M:%S'),
                                                     'end_time': new_e.strftime('%Y-%m-%dT%H:%M:%S'),
                                                     'status': '已預約', 'actual_rate': int(row.get('default_rate', 500)),
@@ -602,6 +613,7 @@ with tab4:
                                     if new_lessons_list:
                                         df_sess = pd.concat([df_sess, pd.DataFrame(new_lessons_list)], ignore_index=True)
                                         if 'sid_str' in df_sess.columns: df_sess = df_sess.drop(columns=['sid_str'])
+                                        if 'resolved_sid' in df_sess.columns: df_sess = df_sess.drop(columns=['resolved_sid'])
                                         save_to_cloud("sessions", df_sess)
                                         st.toast("展延成功！")
                                         st.rerun()
