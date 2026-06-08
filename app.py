@@ -69,7 +69,7 @@ except:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 3. 超高速資料同步模組 (Schema Enforcer 強化出廠)
+# 3. 超高速資料同步模組 (Schema Enforcer)
 # ==========================================
 def fetch_sheet_safe(worksheet_name):
     try:
@@ -213,7 +213,6 @@ with tab1:
     df_stu = st.session_state.db_stu.copy()
     hist_offset = 0 if st.session_state.db_stats.empty else st.session_state.db_stats['cumulative_offset'].iloc[0]
     
-    # 🔥 模擬測試修復點：確保 actual_rate 欄位即使在全空狀況下也存在
     if 'actual_rate' not in df_sess.columns: df_sess['actual_rate'] = 0
     if 'invoice_id' not in df_sess.columns: df_sess['invoice_id'] = 0
     
@@ -410,9 +409,9 @@ with tab2:
                 st.rerun()
 
     st.divider()
-    c_head, c_ref = st.columns([4, 1])
-    c_head.subheader("🗓️ 近期課表與總覽")
-    if c_ref.button("🔄 重整畫面"): 
+    options_col, refresh_col = st.columns([4, 1])
+    options_col.subheader("🗓️ 近期課表與總覽")
+    if refresh_col.button("🔄 重整畫面"): 
         st.cache_data.clear()
         sync_from_cloud()
         st.rerun()
@@ -469,22 +468,27 @@ with tab2:
                 st.info("未來兩週目前沒有排課喔！去放個假吧 🏝️")
                 
         with tab_all:
-            df_table = merged.sort_values('s_dt_safe', ascending=False).copy()
-            df_table['日期'] = df_table['s_dt_safe'].dt.strftime('%Y-%m-%d')
-            df_table['時間'] = df_table['s_dt_safe'].dt.strftime('%H:%M') + " - " + df_table['e_dt_safe'].dt.strftime('%H:%M')
-            
-            df_table['學生'] = df_table.get('name', pd.Series("未知", index=df_table.index)).fillna("未知")
-            df_table['狀態'] = df_table.get('status', pd.Series("已預約", index=df_table.index)).fillna("已預約")
-            df_table['progress'] = df_table.get('progress', pd.Series("", index=df_table.index)).fillna("")
-            
-            target_gid_series = df_table.get('google_event_id', pd.Series("", index=df_table.index)).fillna("")
-            df_table['同步日曆'] = target_gid_series.apply(lambda x: "✅" if pd.notna(x) and str(x).strip() != "" else "❌")
-            
-            st.dataframe(
-                df_table[['日期', '時間', '學生', '狀態', '同步日曆', 'progress']],
-                use_container_width=True,
-                hide_index=True
-            )
+            # 🔥 終極大修改防爆點：如果被 dropna 刪到全空，直接提供乾淨的標準空表格，不走加工邏輯
+            if merged.empty:
+                empty_table = pd.DataFrame(columns=['日期', '時間', '學生', '狀態', '同步日曆', 'progress'])
+                st.dataframe(empty_table, use_container_width=True, hide_index=True)
+            else:
+                df_table = merged.sort_values('s_dt_safe', ascending=False).copy()
+                df_table['日期'] = df_table['s_dt_safe'].dt.strftime('%Y-%m-%d')
+                df_table['時間'] = df_table['s_dt_safe'].dt.strftime('%H:%M') + " - " + df_table['e_dt_safe'].dt.strftime('%H:%M')
+                
+                df_table['學生'] = df_table.get('name', pd.Series("未知", index=df_table.index)).fillna("未知")
+                df_table['狀態'] = df_table.get('status', pd.Series("已預約", index=df_table.index)).fillna("已預約")
+                df_table['progress'] = df_table.get('progress', pd.Series("", index=df_table.index)).fillna("")
+                
+                target_gid_series = df_table.get('google_event_id', pd.Series("", index=df_table.index)).fillna("")
+                df_table['同步日曆'] = target_gid_series.apply(lambda x: "✅" if pd.notna(x) and str(x).strip() != "" else "❌")
+                
+                st.dataframe(
+                    df_table[['日期', '時間', '學生', '狀態', '同步日曆', 'progress']],
+                    use_container_width=True,
+                    hide_index=True
+                )
     else:
         st.info("目前尚無課程資料")
 
@@ -502,7 +506,7 @@ with tab3:
             df_sess['safe_inv'] = pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
             df_sess['safe_status'] = df_sess.get('status', '已預約')
             
-            mask = ((df_sess['safe_status'] == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['safe_inv'] == 0)
+            mask = ((df_sess['safe_status'] == 'Ref完成') | (df_sess['safe_status'] == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['safe_inv'] == 0)
             pending_df = df_sess[mask].copy()
             
             if not pending_df.empty:
