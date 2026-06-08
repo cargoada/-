@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
 
-st.set_page_config(page_title="家教排課系統 v2.1", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v2.2", page_icon="📅", layout="centered")
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
@@ -36,7 +36,7 @@ except:
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 2.1")
+    st.title("👋 歡迎使用排課系統 2.2")
     if "users" in st.secrets:
         user_dict = st.secrets["users"]
         selected_login = st.selectbox("請選擇您的身分", list(user_dict.keys()))
@@ -121,25 +121,21 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# TAB 1: 概況中心 (🔥 升級：完美融入小日曆)
+# TAB 1: 概況中心
 # ==========================================
 with tab1:
     st.subheader("📊 營收動態與行程追蹤")
     
-    # ---------------- 📅 原生安全小日曆區塊 ----------------
     with st.container(border=True):
         st.markdown("### 📅 老師小日曆")
-        # 建立一個精美的日曆元件，預設選取今天
         cal_date = st.date_input("點擊下方日曆切換日期，可查看當天課表：", datetime.now(), label_visibility="collapsed")
         
-        # 解析排課資料
         if not df_sess.empty:
             df_cal_check = df_sess.copy()
             df_cal_check['start_dt_safe'] = pd.to_datetime(df_cal_check['start_time'], errors='coerce')
             df_cal_check['end_dt_safe'] = pd.to_datetime(df_cal_check['end_time'], errors='coerce')
             df_cal_check = df_cal_check.dropna(subset=['start_dt_safe', 'end_dt_safe'])
             
-            # 篩選選取日期的課 (比對年-月-日)
             target_date_str = cal_date.strftime('%Y-%m-%d')
             df_today_lessons = df_cal_check[df_cal_check['start_dt_safe'].dt.strftime('%Y-%m-%d') == target_date_str]
             df_today_lessons = df_today_lessons.sort_values('start_dt_safe')
@@ -153,7 +149,7 @@ with tab1:
                     s_time = l_row['start_dt_safe'].strftime('%H:%M')
                     e_time = l_row['end_dt_safe'].strftime('%H:%M')
                     
-                    st.markdown(f"▶️ `<span style='color:{l_color};'>●</span>` **{s_time} - {e_time}** │ 🧑‍🎓 **{name_display if 'name_display' in locals() else l_name}**", unsafe_allow_html=True)
+                    st.markdown(f"▶️ `<span style='color:{l_color};'>●</span>` **{s_time} - {e_time}** │ 🧑‍🎓 **{l_name}**", unsafe_allow_html=True)
                     if l_row.get('progress', ""):
                         st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;🏷️ 進度：{l_row['progress']}")
             else:
@@ -163,7 +159,6 @@ with tab1:
             
     st.divider()
     
-    # ---------------- 💰 經營摘要數據 ----------------
     hist_offset = 0
     if not df_stats.empty and 'cumulative_offset' in df_stats.columns:
         try: hist_offset = float(df_stats['cumulative_offset'].iloc[0])
@@ -201,50 +196,132 @@ with tab1:
         st.info("尚無現有課程資料")
 
 # ==========================================
-# TAB 2: 課表排程
+# TAB 2: 課表排程 (🔥 升級：加入大範圍智慧自動排課)
 # ==========================================
 with tab2:
     if df_stu.empty:
         st.warning("⚠️ 請先前往「🧑‍🎓 學生戰情」建立學生資料，才能開始排課喔！")
     else:
-        st.subheader("➕ 快速建立新課程")
-        with st.form("new_lesson_form"):
-            c1, c2 = st.columns(2)
-            choose_stu_name = c1.selectbox("選擇上課學生", df_stu['name'].tolist())
-            choose_date = c2.date_input("上課日期", datetime.now())
-            
-            c3, c4 = st.columns(2)
-            choose_time = c3.time_input("開始時間", datetime.now().replace(minute=0, second=0))
-            choose_dur = c4.slider("課程時數 (小時)", 0.5, 4.0, 1.5, 0.5)
-            
-            do_sync_gcal = st.checkbox("🔄 同步到 Google 日曆", value=False)
-            lesson_prog = st.text_area("預定授課進度 / 備註")
-            
-            if st.form_submit_button("✅ 確認建立排課", type="primary"):
-                target_stu_row = df_stu[df_stu['name'] == choose_stu_name].iloc[0]
-                target_stu_id = str(target_stu_row['id']).split('.')[0]
-                target_rate = int(target_stu_row.get('default_rate', 500))
+        # 建立兩個排課收合選單，讓介面乾淨
+        exp_single = st.expander("➕ 快速建立【單堂】課程")
+        exp_range = st.expander("📅 批量建立【大範圍區間】課程 (例如：暑假 7/1 - 8/31)", expanded=False)
+        
+        # --- 舊有的單堂排課功能移入摺疊區 ---
+        with exp_single:
+            with st.form("new_lesson_form"):
+                c1, c2 = st.columns(2)
+                choose_stu_name = c1.selectbox("選擇上課學生", df_stu['name'].tolist(), key="single_stu")
+                choose_date = c2.date_input("上課日期", datetime.now(), key="single_date")
                 
-                start_datetime = datetime.combine(choose_date, choose_time)
-                end_datetime = start_datetime + timedelta(hours=choose_dur)
+                c3, c4 = st.columns(2)
+                choose_time = c3.time_input("開始時間", datetime.now().replace(minute=0, second=0), key="single_time")
+                choose_dur = c4.slider("課程時數 (小時)", 0.5, 4.0, 1.5, 0.5, key="single_dur")
                 
-                g_id = ""
-                if do_sync_gcal:
-                    g_id = create_google_event(f"家教: {choose_stu_name}", start_datetime, end_datetime)
+                do_sync_gcal = st.checkbox("🔄 同步到 Google 日曆", value=False, key="single_sync")
+                lesson_prog = st.text_area("預定授課進度 / 備註", key="single_note")
                 
-                max_id = int(df_sess['id'].max()) if not df_sess.empty and 'id' in df_sess.columns else 0
-                new_lesson = pd.DataFrame([{
-                    'id': max_id + 1, 'student_id': target_stu_id,
-                    'start_time': start_datetime.strftime('%Y-%m-%dT%H:%M:%S'),
-                    'end_time': start_datetime.strftime('%Y-%m-%dT%H:%M:%S') if service is None else end_datetime.strftime('%Y-%m-%dT%H:%M:%S'),
-                    'status': '已預約', 'actual_rate': target_rate,
-                    'google_event_id': g_id, 'progress': lesson_prog, 'invoice_id': 0
-                }])
+                if st.form_submit_button("✅ 確認建立單堂排課", type="primary"):
+                    target_stu_row = df_stu[df_stu['name'] == choose_stu_name].iloc[0]
+                    target_stu_id = str(target_stu_row['id']).split('.')[0]
+                    target_rate = int(target_stu_row.get('default_rate', 500))
+                    
+                    start_datetime = datetime.combine(choose_date, choose_time)
+                    end_datetime = start_datetime + timedelta(hours=choose_dur)
+                    
+                    g_id = ""
+                    if do_sync_gcal:
+                        g_id = create_google_event(f"家教: {choose_stu_name}", start_datetime, end_datetime)
+                    
+                    max_id = int(df_sess['id'].max()) if not df_sess.empty and 'id' in df_sess.columns else 0
+                    new_lesson = pd.DataFrame([{
+                        'id': max_id + 1, 'student_id': target_stu_id,
+                        'start_time': start_datetime.strftime('%Y-%m-%dT%H:%M:%S'),
+                        'end_time': end_datetime.strftime('%Y-%m-%dT%H:%M:%S'),
+                        'status': '已預約', 'actual_rate': target_rate,
+                        'google_event_id': g_id, 'progress': lesson_prog, 'invoice_id': 0
+                    }])
+                    
+                    df_sess = pd.concat([df_sess, new_lesson], ignore_index=True)
+                    save_to_cloud("sessions", df_sess)
+                    st.toast("🎉 單堂課程建立成功！")
+                    st.rerun()
+
+        # --- 🔥 全新亮點：大範圍區間自動排課系統 ---
+        with exp_range:
+            with st.form("range_lesson_form"):
+                st.markdown("##### ⚙️ 區間與學生設定")
+                r_stu_name = st.selectbox("選擇上課學生", df_stu['name'].tolist(), key="range_stu")
                 
-                df_sess = pd.concat([df_sess, new_lesson], ignore_index=True)
-                save_to_cloud("sessions", df_sess)
-                st.toast("🎉 課程建立成功！")
-                st.rerun()
+                col_start, col_end = st.columns(2)
+                r_start_date = col_start.date_input("📆 區間開始日期", datetime.now())
+                r_end_date = col_end.date_input("📆 區間結束日期", datetime.now() + timedelta(days=60))
+                
+                st.divider()
+                st.markdown("##### ⏰ 每週固定上課時間 (可複選多個時段)")
+                
+                # 讓老師勾選這段期間內，每週固定上星期幾
+                weekdays_map = {"星期一": 0, "星期二": 1, "星期三": 2, "星期四": 3, "星期五": 4, "星期六": 5, "星期日": 6}
+                selected_days = st.multiselect("選擇每週上課天", list(weekdays_map.keys()), default=["星期一"])
+                
+                col_t1, col_t2 = st.columns(2)
+                r_time = col_t1.time_input("⏰ 上課開始時間", datetime.now().replace(hour=14, minute=0, second=0))
+                r_dur = col_t2.slider("課程時數 (小時)", 0.5, 4.0, 2.0, 0.5, key="range_dur")
+                
+                r_sync_gcal = st.checkbox("🔄 同時將所有產生的課程同步到 Google 日曆", value=False)
+                r_note = st.text_input("備註 (例如：暑期常規課)")
+                
+                if st.form_submit_button("🚀 啟動大範圍自動排課", type="primary"):
+                    if not selected_days:
+                        st.error("❌ 請至少選擇一個每週上課天（例如：星期一）")
+                    elif r_start_date > r_end_date:
+                        st.error("❌ 開始日期不能大於結束日期喔！")
+                    else:
+                        target_stu_row = df_stu[df_stu['name'] == r_stu_name].iloc[0]
+                        target_stu_id = str(target_stu_row['id']).split('.')[0]
+                        target_rate = int(target_stu_row.get('default_rate', 500))
+                        
+                        # 轉換選取的天數為數字 list [0, 1, 2...]
+                        target_wday_nums = [weekdays_map[d] for d in selected_days]
+                        
+                        # 迴圈跑遍區間內的每一天
+                        current_date = r_start_date
+                        new_lessons_bulk = []
+                        max_id_bulk = int(df_sess['id'].max()) if not df_sess.empty and 'id' in df_sess.columns else 0
+                        
+                        with st.spinner("正在為您精算區間日期並建立課表中..."):
+                            while current_date <= r_end_date:
+                                # 如果當天符合老師勾選的星期幾，就排課！
+                                if current_date.weekday() in target_wday_nums:
+                                    s_dt = datetime.combine(current_date, r_time)
+                                    e_dt = s_dt + timedelta(hours=r_dur)
+                                    
+                                    g_id = ""
+                                    if r_sync_gcal:
+                                        g_id = create_google_event(f"家教: {r_stu_name}", s_dt, e_dt)
+                                        time.sleep(0.15) # 防止 Google API 頻率過快報錯
+                                    
+                                    max_id_bulk += 1
+                                    new_lessons_bulk.append({
+                                        'id': max_id_bulk,
+                                        'student_id': target_stu_id,
+                                        'start_time': s_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                                        'end_time': e_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                                        'status': '已預約',
+                                        'actual_rate': target_rate,
+                                        'google_event_id': g_id,
+                                        'progress': r_note,
+                                        'invoice_id': 0
+                                    })
+                                current_date += timedelta(days=1)
+                        
+                        if new_lessons_bulk:
+                            df_sess = pd.concat([df_sess, pd.DataFrame(new_lessons_bulk)], ignore_index=True)
+                            save_to_cloud("sessions", df_sess)
+                            st.success(f"🎉 成功！已自動在區間內建立 {len(new_lessons_bulk)} 堂課程。")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ 檢查範圍後發現，該日期區間內沒有包含您選取的星期天數喔！")
 
     st.divider()
     st.subheader("📋 課表列表總覽 (未來兩週)")
@@ -337,7 +414,7 @@ with tab3:
                 save_to_cloud("sessions", df_sess.drop(columns=['dt_safe', 'inv_safe']))
                 st.toast(f"🧾 結算成功！已自動產出 {new_bill_count} 張帳單。")
                 st.rerun()
-            else: st.info("目 前沒有需要結算的過期課程。")
+            else: st.info("目前沒有需要結算的過期課程。")
         else: st.info("尚無排課資料可供結算。")
 
     st.divider()
@@ -373,7 +450,7 @@ with tab3:
                                     h_safe = (pd.to_datetime(ls['end_time']) - pd.to_datetime(ls['start_time'])).total_seconds() / 3600
                                     cost = int(h_safe * int(ls.get('actual_rate', 500)))
                                     msg.append(f"📌 {dt_safe} ({h_safe:.1f}小時) : ${cost:,}")
-                                msg.append(f"\n總計金額：${total_amt:,}")
+                                msg.append(f"\n總計金額：${int(row['total_amount'])}元")
                                 msg.append("再麻煩您空閒時留意，謝謝老師！")
                                 st.code("\n".join(msg), language=None)
                             else:
