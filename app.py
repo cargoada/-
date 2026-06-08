@@ -3,9 +3,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 
-# 外部套件
+# 外部套件 (🔥 已徹底拔除容易當機的 streamlit_calendar)
 from streamlit_gsheets import GSheetsConnection
-from streamlit_calendar import calendar
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -211,10 +210,9 @@ with tab1:
     hist_offset = pd.to_numeric(st.session_state.db_stats.get('cumulative_offset', pd.Series([0]))).iloc[0]
     
     if not df_sess.empty:
-        # 🔥 加入 errors='coerce' 防止 ValueError
         df_sess['start_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
         df_sess['end_dt'] = pd.to_datetime(df_sess['end_time'], errors='coerce')
-        df_sess = df_sess.dropna(subset=['start_dt', 'end_dt']) # 過濾無效日期
+        df_sess = df_sess.dropna(subset=['start_dt', 'end_dt']) 
         
         df_sess['actual_rate'] = pd.to_numeric(df_sess.get('actual_rate', 0), errors='coerce').fillna(0)
         df_sess['amount'] = ((df_sess['end_dt'] - df_sess['start_dt']).dt.total_seconds() / 3600) * df_sess['actual_rate']
@@ -253,7 +251,7 @@ with tab1:
         col3.metric("歷史總收入", f"${int(hist_offset):,}")
         st.info("目前沒有現有課程資料，圖表將在排課後顯示。")
 
-# ================= Tab 2: 排課 =================
+# ================= Tab 2: 排課 (🔥 大改版：原生看板取代日曆) =================
 with tab2:
     df_stu = st.session_state.db_stu.copy()
     df_sess = st.session_state.db_sess.copy()
@@ -266,7 +264,6 @@ with tab2:
         
         if not row.empty:
             row = row.iloc[0]
-            # 🔥 安全轉換
             s_dt = pd.to_datetime(row.get('start_time'), errors='coerce')
             e_dt = pd.to_datetime(row.get('end_time'), errors='coerce')
             
@@ -382,11 +379,11 @@ with tab2:
                         g_id = create_google_event(f"家教: {sel_stu}", current_start, current_end)
                     
                     new_rows.append({
-                        'id': int(df_sess['id'].max() + 1 + i) if not df_sess.empty else 1 + i,
+                        'id': int(st.session_state.db_sess['id'].max() + len(new_rows) + 1) if not st.session_state.db_sess.empty else len(new_rows) + 1,
                         'student_id': sid,
                         'start_time': current_start.strftime('%Y-%m-%dT%H:%M:%S'),
                         'end_time': current_end.strftime('%Y-%m-%dT%H:%M:%S'),
-                        'status': '已完成' if current_start < datetime.now() else '已預約',
+                        'status': '已預約',
                         'actual_rate': rate,
                         'google_event_id': g_id,
                         'progress': n_prog,
@@ -401,61 +398,73 @@ with tab2:
                 st.rerun()
 
     st.divider()
-    c_cal, c_ref = st.columns([4, 1])
-    c_cal.subheader("🗓️ 行事曆")
-    
-    events = []
+    c_head, c_ref = st.columns([4, 1])
+    c_head.subheader("🗓️ 近期課表與總覽 (原生加速版)")
+    if c_ref.button("🔄 重整畫面"): 
+        st.cache_data.clear()
+        st.rerun()
+        
     if not df_sess.empty and not df_stu.empty:
-        try:
-            merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
-            # 確保日期可以正常解析
-            merged['s_dt_safe'] = pd.to_datetime(merged['start_time'], errors='coerce')
-            merged['e_dt_safe'] = pd.to_datetime(merged['end_time'], errors='coerce')
-            merged = merged.dropna(subset=['s_dt_safe', 'e_dt_safe'])
+        merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
+        merged['s_dt_safe'] = pd.to_datetime(merged['start_time'], errors='coerce')
+        merged['e_dt_safe'] = pd.to_datetime(merged['end_time'], errors='coerce')
+        merged = merged.dropna(subset=['s_dt_safe', 'e_dt_safe'])
+        
+        tab_up, tab_all = st.tabs(["🚀 未來兩週動態", "📚 完整課表資料庫"])
+        
+        with tab_up:
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            two_weeks = today + timedelta(days=14)
+            upcoming = merged[(merged['s_dt_safe'] >= today) & (merged['s_dt_safe'] <= two_weeks)].sort_values('s_dt_safe')
             
-            for _, row in merged.iterrows():
-                try:
-                    s_iso = row['s_dt_safe'].isoformat()
-                    e_iso = row['e_dt_safe'].isoformat()
-                    events.append({
-                        "id": str(row.get('id_x', "")), "title": row.get('name', ""),
-                        "start": s_iso, "end": e_iso,
-                        "backgroundColor": row.get('color', "#3498DB"), "borderColor": row.get('color', "#3498DB"), "textColor": "#FFFFFF"
-                    })
-                except: continue
-        except: pass
-
-    cal = calendar(events=events, options={"initialView": "dayGridMonth", "height": 650}, callbacks=['eventClick'], key="cal_v_final")
-    if cal.get("eventClick"):
-        cid = int(cal["eventClick"]["event"]["id"])
-        if st.session_state.edit_session_id != cid:
-            st.session_state.edit_session_id = cid
-            st.rerun()
-
-    with st.expander("📋 詳細列表 / 編輯 / 刪除", expanded=True):
-        if not df_sess.empty:
-            df_display = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id')
-            df_display['sort_dt'] = pd.to_datetime(df_display['start_time'], errors='coerce')
-            df_display = df_display.dropna(subset=['sort_dt']).sort_values('sort_dt', ascending=False).head(20)
+            if not upcoming.empty:
+                upcoming['date_str'] = upcoming['s_dt_safe'].dt.strftime('%Y-%m-%d')
+                grouped = upcoming.groupby('date_str')
+                weekdays_tw = ["一", "二", "三", "四", "五", "六", "日"]
+                
+                for d_str, group in grouped:
+                    wd = weekdays_tw[pd.to_datetime(d_str).weekday()]
+                    with st.container(border=True):
+                        st.markdown(f"**📅 {d_str} (星期{wd})**")
+                        for _, r in group.iterrows():
+                            sid = int(r['id_x'])
+                            s_time = r['s_dt_safe'].strftime('%H:%M')
+                            e_time = r['e_dt_safe'].strftime('%H:%M')
+                            s_name = r.get('name', '未知')
+                            gid = r.get('google_event_id', "")
+                            connected = pd.notna(gid) and str(gid) != ""
+                            
+                            c1, c2, c3, c4 = st.columns([2, 3, 1, 1])
+                            c1.markdown(f"`{s_time} - {e_time}`")
+                            c2.markdown(f"🧑‍🎓 **{s_name}** {'🔗' if connected else ''}")
+                            
+                            if c3.button("✏️", key=f"ed_up_{sid}"):
+                                st.session_state.edit_session_id = sid
+                                st.rerun()
+                            if c4.button("🗑️", key=f"del_up_{sid}"):
+                                if connected: delete_google_event(gid)
+                                st.session_state.db_sess = df_sess[df_sess['id'] != sid]
+                                push_to_cloud("sessions", st.session_state.db_sess)
+                                st.toast("已刪除！", icon="🗑️")
+                                st.rerun()
+            else:
+                st.info("未來兩週目前沒有排課喔！去放個假吧 🏝️")
+                
+        with tab_all:
+            df_table = merged.sort_values('s_dt_safe', ascending=False).copy()
+            df_table['日期'] = df_table['s_dt_safe'].dt.strftime('%Y-%m-%d')
+            df_table['時間'] = df_table['s_dt_safe'].dt.strftime('%H:%M') + " - " + df_table['e_dt_safe'].dt.strftime('%H:%M')
+            df_table['學生'] = df_table.get('name', '未知')
+            df_table['狀態'] = df_table['status']
+            df_table['同步日曆'] = df_table['google_event_id'].apply(lambda x: "✅" if pd.notna(x) and x != "" else "❌")
             
-            for _, row in df_display.iterrows():
-                sid = int(row.get('id_x', 0))
-                gid = row.get('google_event_id', "")
-                connected = pd.notna(gid) and str(gid) != ""
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([6, 1, 1], gap="small")
-                    c1.markdown(f"**{row.get('name', '未知')}**")
-                    c1.caption(f"{row['sort_dt'].strftime('%m/%d %H:%M')} {'(✅已同步)' if connected else ''}")
-                    with c2:
-                        if st.button("✏️", key=f"ed{sid}"): st.session_state.edit_session_id = sid; st.rerun()
-                    with c3:
-                        if st.button("🗑️", key=f"del{sid}"):
-                            if connected: delete_google_event(gid)
-                            df_sess = df_sess[df_sess['id'].astype(int) != sid]
-                            st.session_state.db_sess = df_sess
-                            push_to_cloud("sessions", df_sess)
-                            st.toast("已刪除！", icon="🗑️")
-                            st.rerun()
+            st.dataframe(
+                df_table[['日期', '時間', '學生', '狀態', '同步日曆', 'progress']],
+                use_container_width=True,
+                hide_index=True
+            )
+    else:
+        st.info("目前尚無課程資料")
 
 # ================= Tab 3: 帳單 =================
 with tab3:
@@ -467,7 +476,6 @@ with tab3:
         df_sess['end_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce') 
         df_sess['safe_inv'] = pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
         
-        # 過濾不合法時間避免報錯
         df_sess = df_sess.dropna(subset=['end_dt'])
         
         mask = ((df_sess.get('status', '已完成') == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['safe_inv'] == 0)
@@ -575,9 +583,8 @@ with tab4:
     if not df_stu.empty and not df_sess.empty:
         full_data = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
         
-        # 🔥 加入 errors='coerce' 防止 ValueError
         full_data['start_dt'] = pd.to_datetime(full_data['start_time'], errors='coerce')
-        full_data = full_data.dropna(subset=['start_dt']) # 剃除無效時間列
+        full_data = full_data.dropna(subset=['start_dt']) 
         
         weekdays_tw = ["一", "二", "三", "四", "五", "六", "日"]
         
