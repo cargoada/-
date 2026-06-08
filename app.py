@@ -69,7 +69,7 @@ except:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 3. 超高速資料同步模組 (Schema Enforcer)
+# 3. 超高速資料同步模組 (Schema Enforcer 強化出廠)
 # ==========================================
 def fetch_sheet_safe(worksheet_name):
     try:
@@ -213,38 +213,49 @@ with tab1:
     df_stu = st.session_state.db_stu.copy()
     hist_offset = 0 if st.session_state.db_stats.empty else st.session_state.db_stats['cumulative_offset'].iloc[0]
     
-    if not df_sess.empty:
+    # 🔥 模擬測試修復點：確保 actual_rate 欄位即使在全空狀況下也存在
+    if 'actual_rate' not in df_sess.columns: df_sess['actual_rate'] = 0
+    if 'invoice_id' not in df_sess.columns: df_sess['invoice_id'] = 0
+    
+    if not df_sess.empty and 'start_time' in df_sess.columns:
         df_sess['start_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
         df_sess['end_dt'] = pd.to_datetime(df_sess['end_time'], errors='coerce')
         df_sess = df_sess.dropna(subset=['start_dt', 'end_dt']) 
         
-        df_sess['amount'] = ((df_sess['end_dt'] - df_sess['start_dt']).dt.total_seconds() / 3600) * df_sess['actual_rate']
-        
-        current_time = datetime.now()
-        this_month_income = df_sess[df_sess['start_dt'].dt.month == current_time.month]['amount'].sum()
-        pending_income = df_sess[(df_sess['end_dt'] < current_time) & (df_sess['invoice_id'] == 0)]['amount'].sum()
-        total_income = df_sess['amount'].sum() + hist_offset
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("本月預估", f"${int(this_month_income):,}")
-        col2.metric("待結算", f"${int(pending_income):,}")
-        col3.metric("歷史總收入", f"${int(total_income):,}", help="包含已清理的歷史紀錄收入")
+        if not df_sess.empty:
+            df_sess['amount'] = ((df_sess['end_dt'] - df_sess['start_dt']).dt.total_seconds() / 3600) * df_sess['actual_rate']
+            
+            current_time = datetime.now()
+            this_month_income = df_sess[df_sess['start_dt'].dt.month == current_time.month]['amount'].sum()
+            pending_income = df_sess[(df_sess['end_dt'] < current_time) & (df_sess['invoice_id'] == 0)]['amount'].sum()
+            total_income = df_sess['amount'].sum() + hist_offset
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("本月預估", f"${int(this_month_income):,}")
+            col2.metric("待結算", f"${int(pending_income):,}")
+            col3.metric("歷史總收入", f"${int(total_income):,}", help="包含已清理的歷史紀錄收入")
 
-        st.divider()
+            st.divider()
 
-        if not df_stu.empty:
-            chart_df = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
-            chart_df['name'] = chart_df['name'].fillna("未知")
+            if not df_stu.empty:
+                chart_df = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
+                chart_df['name'] = chart_df['name'].fillna("未知")
+            else:
+                chart_df = df_sess.copy()
+                chart_df['name'] = "未知"
+
+            st.subheader("📈 月營收趨勢 (現有資料)")
+            chart_df['month_str'] = chart_df['start_dt'].dt.strftime('%Y-%m')
+            st.bar_chart(chart_df.groupby('month_str')['amount'].sum(), color="#3498DB")
+
+            st.subheader("🏆 學生營收貢獻 (現有資料)")
+            st.bar_chart(chart_df.groupby('name')['amount'].sum().sort_values(ascending=False), horizontal=True, color="#FF5733")
         else:
-            chart_df = df_sess.copy()
-            chart_df['name'] = "未知"
-
-        st.subheader("📈 月營收趨勢 (現有資料)")
-        chart_df['month_str'] = chart_df['start_dt'].dt.strftime('%Y-%m')
-        st.bar_chart(chart_df.groupby('month_str')['amount'].sum(), color="#3498DB")
-
-        st.subheader("🏆 學生營收貢獻 (現有資料)")
-        st.bar_chart(chart_df.groupby('name')['amount'].sum().sort_values(ascending=False), horizontal=True, color="#FF5733")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("本月預估", "$0")
+            col2.metric("待結算", "$0")
+            col3.metric("歷史總收入", f"${int(hist_offset):,}")
+            st.info("目前沒有現有課程資料，圖表將在排課後顯示。")
     else:
         col1, col2, col3 = st.columns(3)
         col1.metric("本月預估", "$0")
@@ -407,7 +418,6 @@ with tab2:
         st.rerun()
         
     if not df_sess.empty:
-        # 🔥 how='left' 防止學生表為空時整個資料表被氣化掉
         if not df_stu.empty:
             merged = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
         else:
@@ -435,7 +445,6 @@ with tab2:
                     with st.container(border=True):
                         st.markdown(f"**📅 {d_str} (星期{wd})**")
                         for _, r in group.iterrows():
-                            # 安全取得課程 ID
                             sid = int(r.get('id_x', r.get('id', 0)))
                             s_time = r['s_dt_safe'].strftime('%H:%M')
                             e_time = r['e_dt_safe'].strftime('%H:%M')
@@ -464,7 +473,6 @@ with tab2:
             df_table['日期'] = df_table['s_dt_safe'].dt.strftime('%Y-%m-%d')
             df_table['時間'] = df_table['s_dt_safe'].dt.strftime('%H:%M') + " - " + df_table['e_dt_safe'].dt.strftime('%H:%M')
             
-            # 🔥 終極治本防禦：使用安全的 .get()，並加上 pd.Series 預設索引，百分之百消滅 KeyError
             df_table['學生'] = df_table.get('name', pd.Series("未知", index=df_table.index)).fillna("未知")
             df_table['狀態'] = df_table.get('status', pd.Series("已預約", index=df_table.index)).fillna("已預約")
             df_table['progress'] = df_table.get('progress', pd.Series("", index=df_table.index)).fillna("")
@@ -487,36 +495,39 @@ with tab3:
     df_sess = st.session_state.db_sess.copy()
     
     if st.button("⚡ 一鍵結算 (自動分月開單)", type="primary"):
-        df_sess['end_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce') 
-        df_sess = df_sess.dropna(subset=['end_dt'])
-        
-        df_sess['safe_inv'] = pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
-        df_sess['safe_status'] = df_sess.get('status', '已預約')
-        
-        mask = ((df_sess['safe_status'] == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['safe_inv'] == 0)
-        pending_df = df_sess[mask].copy()
-        
-        if not pending_df.empty:
-            pending_df['month_str'] = pending_df['end_dt'].dt.strftime('%Y-%m')
-            groups = pending_df.groupby(['student_id', 'month_str'])
-            new_inv_count = 0
+        if not df_sess.empty and 'start_time' in df_sess.columns:
+            df_sess['end_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce') 
+            df_sess = df_sess.dropna(subset=['end_dt'])
             
-            for (sid, m_str), group in groups:
-                total_amt = sum(((pd.to_datetime(r.get('end_time'), errors='coerce') - pd.to_datetime(r.get('start_time'), errors='coerce')).total_seconds() / 3600) * pd.to_numeric(r.get('actual_rate', 0)) for _, r in group.iterrows())
-                inv_id = int(df_inv['id'].max()) + 1 if not df_inv.empty and 'id' in df_inv.columns else 1
-                new_inv = pd.DataFrame([{'id': inv_id, 'student_id': sid, 'total_amount': int(total_amt), 'created_at': datetime.now().isoformat(), 'is_paid': 0, 'note': m_str}])
-                df_inv = pd.concat([df_inv, new_inv], ignore_index=True)
-                df_sess.loc[group.index, 'invoice_id'] = inv_id
-                new_inv_count += 1
+            df_sess['safe_inv'] = pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
+            df_sess['safe_status'] = df_sess.get('status', '已預約')
             
-            st.session_state.db_inv = df_inv
-            st.session_state.db_sess = df_sess
-            push_to_cloud("invoices", df_inv)
-            push_to_cloud("sessions", df_sess)
-            st.toast(f"結算完成！產出 {new_inv_count} 張帳單。", icon="🧾")
-            st.rerun()
+            mask = ((df_sess['safe_status'] == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['safe_inv'] == 0)
+            pending_df = df_sess[mask].copy()
+            
+            if not pending_df.empty:
+                pending_df['month_str'] = pending_df['end_dt'].dt.strftime('%Y-%m')
+                groups = pending_df.groupby(['student_id', 'month_str'])
+                new_inv_count = 0
+                
+                for (sid, m_str), group in groups:
+                    total_amt = sum(((pd.to_datetime(r.get('end_time'), errors='coerce') - pd.to_datetime(r.get('start_time'), errors='coerce')).total_seconds() / 3600) * pd.to_numeric(r.get('actual_rate', 0)) for _, r in group.iterrows())
+                    inv_id = int(df_inv['id'].max()) + 1 if not df_inv.empty and 'id' in df_inv.columns else 1
+                    new_inv = pd.DataFrame([{'id': inv_id, 'student_id': sid, 'total_amount': int(total_amt), 'created_at': datetime.now().isoformat(), 'is_paid': 0, 'note': m_str}])
+                    df_inv = pd.concat([df_inv, new_inv], ignore_index=True)
+                    df_sess.loc[group.index, 'invoice_id'] = inv_id
+                    new_inv_count += 1
+                
+                st.session_state.db_inv = df_inv
+                st.session_state.db_sess = df_sess
+                push_to_cloud("invoices", df_inv)
+                push_to_cloud("sessions", df_sess)
+                st.toast(f"結算完成！產出 {new_inv_count} 張帳單。", icon="🧾")
+                st.rerun()
+            else:
+                st.info("目前沒有未結算的課程")
         else:
-            st.info("目 前沒有未結算的課程")
+            st.info("目前沒有可供結算的課程紀錄。")
 
     st.divider()
     if not df_inv.empty and 'is_paid' in df_inv.columns:
