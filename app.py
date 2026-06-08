@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 
-# 外部套件 
+# 外部套件
 from streamlit_gsheets import GSheetsConnection
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -69,36 +69,43 @@ except:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 3. 超高速資料同步模組 
+# 3. 超高速資料同步模組 (🔥大升級：強制作業標準 Schema Enforcer)
 # ==========================================
 def fetch_sheet_safe(worksheet_name):
     try:
         df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=0)
+        if df is None: df = pd.DataFrame()
         
-        if df is None or df.empty:
-            if worksheet_name == "sessions":
-                return pd.DataFrame(columns=['id', 'student_id', 'start_time', 'end_time', 'status', 'actual_rate', 'google_event_id', 'progress', 'invoice_id'])
-            elif worksheet_name == "invoices":
-                return pd.DataFrame(columns=['id', 'student_id', 'total_amount', 'created_at', 'is_paid', 'note'])
-            elif worksheet_name == "students":
-                return pd.DataFrame(columns=['id', 'name', 'default_rate', 'color'])
-            elif worksheet_name == "stats":
-                return pd.DataFrame([{'cumulative_offset': 0}])
-            return pd.DataFrame()
+        # 定義各資料表的「標準欄位清單」，絕不允許漏掉任何一個
+        schemas = {
+            "sessions": ['id', 'student_id', 'start_time', 'end_time', 'status', 'actual_rate', 'google_event_id', 'progress', 'invoice_id'],
+            "invoices": ['id', 'student_id', 'total_amount', 'created_at', 'is_paid', 'note'],
+            "students": ['id', 'name', 'default_rate', 'color'],
+            "stats": ['cumulative_offset']
+        }
+        
+        req_cols = schemas.get(worksheet_name, [])
+        
+        # 如果是全空的表，直接建立骨架
+        if df.empty:
+            return pd.DataFrame(columns=req_cols)
 
+        # 檢查並強制補齊所有缺失的欄位
+        for col in req_cols:
+            if col not in df.columns:
+                df[col] = ""
+                
+        # 強制轉型，確保計算時不會因為型態錯誤當機
         if 'id' in df.columns: df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
-        
-        if worksheet_name == "sessions":
-            for col in ['google_event_id', 'progress', 'invoice_id']:
-                if col not in df.columns: df[col] = "" if col != 'invoice_id' else 0
-        elif worksheet_name == "invoices":
-            for col in ['note', 'created_at', 'is_paid']:
-                if col not in df.columns: df[col] = "" if col != 'is_paid' else 0
-        elif worksheet_name == "stats":
-            if 'cumulative_offset' not in df.columns: df['cumulative_offset'] = 0
-            
+        if 'invoice_id' in df.columns: df['invoice_id'] = pd.to_numeric(df['invoice_id'], errors='coerce').fillna(0).astype(int)
+        if 'actual_rate' in df.columns: df['actual_rate'] = pd.to_numeric(df['actual_rate'], errors='coerce').fillna(0).astype(int)
+        if 'is_paid' in df.columns: df['is_paid'] = pd.to_numeric(df['is_paid'], errors='coerce').fillna(0).astype(int)
+        if 'cumulative_offset' in df.columns: df['cumulative_offset'] = pd.to_numeric(df['cumulative_offset'], errors='coerce').fillna(0)
+
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        print(f"Fetch Error ({worksheet_name}): {e}")
+        return pd.DataFrame()
 
 def sync_from_cloud():
     with st.spinner("⚡ 正在同步雲端資料..."):
@@ -145,7 +152,7 @@ with st.sidebar:
             df_sess = st.session_state.db_sess.copy()
             if not df_sess.empty:
                 df_sess['temp_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
-                to_delete_mask = (df_sess['temp_dt'] < cutoff) & (pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0) != 0)
+                to_delete_mask = (df_sess['temp_dt'] < cutoff) & (df_sess['invoice_id'] != 0)
                 
                 df_to_del = df_sess[to_delete_mask].copy()
                 if not df_to_del.empty:
@@ -153,10 +160,10 @@ with st.sidebar:
                     df_to_del['end_dt'] = pd.to_datetime(df_to_del['end_time'], errors='coerce')
                     df_to_del = df_to_del.dropna(subset=['start_dt', 'end_dt'])
                     
-                    df_to_del['amt'] = ((df_to_del['end_dt'] - df_to_del['start_dt']).dt.total_seconds() / 3600) * pd.to_numeric(df_to_del.get('actual_rate', 0))
+                    df_to_del['amt'] = ((df_to_del['end_dt'] - df_to_del['start_dt']).dt.total_seconds() / 3600) * df_to_del['actual_rate']
                     deleted_revenue = df_to_del['amt'].sum()
                     
-                    current_offset = pd.to_numeric(st.session_state.db_stats.get('cumulative_offset', pd.Series([0]))).iloc[0]
+                    current_offset = 0 if st.session_state.db_stats.empty else st.session_state.db_stats['cumulative_offset'].iloc[0]
                     new_stats = pd.DataFrame([{'cumulative_offset': current_offset + deleted_revenue}])
                     st.session_state.db_stats = new_stats
                     push_to_cloud("stats", new_stats)
@@ -207,21 +214,18 @@ with tab1:
     st.subheader("📊 營收儀表板")
     df_sess = st.session_state.db_sess.copy()
     df_stu = st.session_state.db_stu.copy()
-    hist_offset = pd.to_numeric(st.session_state.db_stats.get('cumulative_offset', pd.Series([0]))).iloc[0]
+    hist_offset = 0 if st.session_state.db_stats.empty else st.session_state.db_stats['cumulative_offset'].iloc[0]
     
     if not df_sess.empty:
         df_sess['start_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce')
         df_sess['end_dt'] = pd.to_datetime(df_sess['end_time'], errors='coerce')
         df_sess = df_sess.dropna(subset=['start_dt', 'end_dt']) 
         
-        df_sess['actual_rate'] = pd.to_numeric(df_sess.get('actual_rate', 0), errors='coerce').fillna(0)
         df_sess['amount'] = ((df_sess['end_dt'] - df_sess['start_dt']).dt.total_seconds() / 3600) * df_sess['actual_rate']
         
-        df_sess['safe_invoice_id'] = pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
         current_time = datetime.now()
-        
         this_month_income = df_sess[df_sess['start_dt'].dt.month == current_time.month]['amount'].sum()
-        pending_income = df_sess[(df_sess['end_dt'] < current_time) & (df_sess['safe_invoice_id'] == 0)]['amount'].sum()
+        pending_income = df_sess[(df_sess['end_dt'] < current_time) & (df_sess['invoice_id'] == 0)]['amount'].sum()
         total_income = df_sess['amount'].sum() + hist_offset
         
         col1, col2, col3 = st.columns(3)
@@ -233,7 +237,7 @@ with tab1:
 
         if not df_stu.empty:
             chart_df = pd.merge(df_sess, df_stu, left_on='student_id', right_on='id', how='left')
-            chart_df['name'] = chart_df.get('name', pd.Series("未知", index=chart_df.index)).fillna("未知")
+            chart_df['name'] = chart_df['name'].fillna("未知")
         else:
             chart_df = df_sess.copy()
             chart_df['name'] = "未知"
@@ -264,14 +268,14 @@ with tab2:
         
         if not row.empty:
             row = row.iloc[0]
-            s_dt = pd.to_datetime(row.get('start_time'), errors='coerce')
-            e_dt = pd.to_datetime(row.get('end_time'), errors='coerce')
+            s_dt = pd.to_datetime(row['start_time'], errors='coerce')
+            e_dt = pd.to_datetime(row['end_time'], errors='coerce')
             
             if pd.notna(s_dt) and pd.notna(e_dt):
                 cur_sid = int(row['student_id'])
                 s_name = df_stu[df_stu['id'] == cur_sid]['name'].values[0] if cur_sid in df_stu['id'].values else "未知"
-                old_prog = row.get('progress', "")
-                gid = row.get('google_event_id', "")
+                old_prog = row['progress']
+                gid = row['google_event_id']
                 
                 with st.container(border=True):
                     st.info(f"正在編輯：**{s_name}** - {s_dt.strftime('%m/%d %H:%M')}")
@@ -427,12 +431,12 @@ with tab2:
                     with st.container(border=True):
                         st.markdown(f"**📅 {d_str} (星期{wd})**")
                         for _, r in group.iterrows():
-                            sid = int(r.get('id_x', 0))
+                            sid = int(r['id_x'])
                             s_time = r['s_dt_safe'].strftime('%H:%M')
                             e_time = r['e_dt_safe'].strftime('%H:%M')
-                            s_name = r.get('name', '未知')
-                            gid = r.get('google_event_id', "")
-                            connected = pd.notna(gid) and str(gid) != ""
+                            s_name = r['name']
+                            gid = r['google_event_id']
+                            connected = pd.notna(gid) and str(gid).strip() != ""
                             
                             c1, c2, c3, c4 = st.columns([2, 3, 1, 1])
                             c1.markdown(f"`{s_time} - {e_time}`")
@@ -454,13 +458,8 @@ with tab2:
             df_table = merged.sort_values('s_dt_safe', ascending=False).copy()
             df_table['日期'] = df_table['s_dt_safe'].dt.strftime('%Y-%m-%d')
             df_table['時間'] = df_table['s_dt_safe'].dt.strftime('%H:%M') + " - " + df_table['e_dt_safe'].dt.strftime('%H:%M')
-            df_table['學生'] = df_table.get('name', '未知')
-            
-            # 🔥 防禦 KeyError: 強制確保這些欄位存在，就算空白也給預設值
-            df_table['狀態'] = df_table.get('status', '已預約')
-            df_table['google_event_id'] = df_table.get('google_event_id', "")
-            df_table['progress'] = df_table.get('progress', "")
-            
+            df_table['學生'] = df_table['name']
+            df_table['狀態'] = df_table['status']
             df_table['同步日曆'] = df_table['google_event_id'].apply(lambda x: "✅" if pd.notna(x) and str(x).strip() != "" else "❌")
             
             st.dataframe(
@@ -479,11 +478,9 @@ with tab3:
     
     if st.button("⚡ 一鍵結算 (自動分月開單)", type="primary"):
         df_sess['end_dt'] = pd.to_datetime(df_sess['start_time'], errors='coerce') 
-        df_sess['safe_inv'] = pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
-        
         df_sess = df_sess.dropna(subset=['end_dt'])
         
-        mask = ((df_sess.get('status', '已完成') == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['safe_inv'] == 0)
+        mask = ((df_sess['status'] == '已完成') | (df_sess['end_dt'] < datetime.now())) & (df_sess['invoice_id'] == 0)
         pending_df = df_sess[mask].copy()
         
         if not pending_df.empty:
@@ -492,7 +489,7 @@ with tab3:
             new_inv_count = 0
             
             for (sid, m_str), group in groups:
-                total_amt = sum(((pd.to_datetime(r['end_time'], errors='coerce') - pd.to_datetime(r['start_time'], errors='coerce')).total_seconds() / 3600) * int(r.get('actual_rate', 0)) for _, r in group.iterrows())
+                total_amt = sum(((pd.to_datetime(r['end_time'], errors='coerce') - pd.to_datetime(r['start_time'], errors='coerce')).total_seconds() / 3600) * r['actual_rate'] for _, r in group.iterrows())
                 inv_id = int(df_inv['id'].max()) + 1 if not df_inv.empty else 1
                 new_inv = pd.DataFrame([{'id': inv_id, 'student_id': sid, 'total_amount': int(total_amt), 'created_at': datetime.now().isoformat(), 'is_paid': 0, 'note': m_str}])
                 df_inv = pd.concat([df_inv, new_inv], ignore_index=True)
@@ -510,7 +507,7 @@ with tab3:
 
     st.divider()
     if not df_inv.empty:
-        unpaid = df_inv[df_inv.get('is_paid', 0) == 0]
+        unpaid = df_inv[df_inv['is_paid'] == 0]
         if not unpaid.empty:
             df_disp = pd.merge(unpaid, st.session_state.db_stu, left_on='student_id', right_on='id', how='left')
             if 'created_at' in df_disp.columns:
@@ -518,11 +515,10 @@ with tab3:
                 df_disp = df_disp.sort_values('sort_dt', ascending=False)
                 
             for _, row in df_disp.iterrows():
-                inv_id = row.get('id_x', 0)
-                s_name = row.get('name', "未知")
-                note_val = row.get('note', "")
-                bill_month = str(note_val) if pd.notna(note_val) and str(note_val).strip() != "" else "未知月份"
-                total_amt = row.get('total_amount', 0)
+                inv_id = row['id_x']
+                s_name = row['name']
+                bill_month = str(row['note']) if pd.notna(row['note']) and str(row['note']).strip() != "" else "未知月份"
+                total_amt = row['total_amount']
                 
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
@@ -536,7 +532,7 @@ with tab3:
                         st.rerun()
                     
                     with st.expander("💬 產生收費通知 (一鍵複製)"):
-                        my_ds = df_sess[pd.to_numeric(df_sess.get('invoice_id', 0), errors='coerce') == inv_id].copy()
+                        my_ds = df_sess[df_sess['invoice_id'] == inv_id].copy()
                         if not my_ds.empty:
                             my_ds['start_dt_safe'] = pd.to_datetime(my_ds['start_time'], errors='coerce')
                             my_ds['end_dt_safe'] = pd.to_datetime(my_ds['end_time'], errors='coerce')
@@ -548,7 +544,7 @@ with tab3:
                             for _, r in my_ds.iterrows():
                                 dt_str = r['start_dt_safe'].strftime('%m/%d')
                                 dur_h = (r['end_dt_safe'] - r['start_dt_safe']).total_seconds() / 3600
-                                amt = int(dur_h * r.get('actual_rate', 0))
+                                amt = int(dur_h * r['actual_rate'])
                                 msg_lines.append(f"📌 {dt_str} ({dur_h:.1f} 小時) : ${amt:,}")
                                 
                             msg_lines.append(f"\n💰 總計金額：${total_amt:,}")
@@ -595,7 +591,7 @@ with tab4:
         
         for _, row in df_stu.iterrows():
             sid = row['id']
-            s_name = row.get('name', '未知')
+            s_name = row['name']
             my_classes = full_data[full_data['student_id'] == sid].sort_values('start_dt', ascending=False)
             total_count = len(my_classes)
             next_class = my_classes[my_classes['start_dt'] >= datetime.now()].sort_values('start_dt').head(1)
@@ -603,7 +599,7 @@ with tab4:
             
             with st.container(border=True):
                 c_icon, c_info, c_action = st.columns([0.5, 4, 1.5])
-                c_icon.markdown(f'<div style="width:30px;height:30px;background-color:{row.get("color", "#3498DB")};border-radius:50%;margin-top:5px;"></div>', unsafe_allow_html=True)
+                c_icon.markdown(f'<div style="width:30px;height:30px;background-color:{row["color"]};border-radius:50%;margin-top:5px;"></div>', unsafe_allow_html=True)
                 with c_info:
                     st.markdown(f"**{s_name}**")
                     st.caption(f"📅 下次上課：{next_class_str} (累計 {total_count} 堂)")
@@ -628,7 +624,7 @@ with tab4:
                         if st.button("🚀 確定一鍵展延", key=f"btn_renew_{sid}", type="primary"):
                             with st.spinner("自動排課中..."):
                                 new_rows = []
-                                rate = row.get('default_rate', 500)
+                                rate = row['default_rate']
                                 
                                 for w in range(1, extend_weeks + 1):
                                     for _, pc in pattern_classes.iterrows():
@@ -672,7 +668,7 @@ with tab4:
                         if not past_classes.empty:
                             for _, cls in past_classes.iterrows():
                                 st.markdown(f"**{cls['start_dt'].strftime('%Y/%m/%d')}**")
-                                st.text(cls.get('progress', '（無紀錄）'))
+                                st.text(cls['progress'])
                                 st.divider()
                         else: st.info("尚無過去的上課紀錄")
                     else: st.info("尚無課程資料")
