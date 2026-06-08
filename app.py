@@ -208,42 +208,55 @@ with tab2:
                 st.rerun()
 
     st.divider()
-    st.subheader("📋 課表列表總覽")
+    st.subheader("📋 課表列表總覽 (未來兩週)")
     
     if not df_sess.empty:
         df_list = df_sess.copy()
         df_list['dt_order'] = pd.to_datetime(df_list['start_time'], errors='coerce')
-        df_list = df_list.dropna(subset=['dt_order']).sort_values('dt_order', ascending=False)
+        df_list['dt_end_order'] = pd.to_datetime(df_list['end_time'], errors='coerce')
         
-        for idx, row in df_list.head(20).iterrows():
-            s_id_str = str(row['student_id']).split('.')[0]
-            name_display = student_name_map.get(s_id_str, "未知學生")
-            color_display = student_color_map.get(s_id_str, "#3498DB")
-            
-            # 🔥 測試修復點：加上安全時間切格防護，防止空白日期導致 IndexError
-            st_val = str(row.get('start_time', ''))
-            et_val = str(row.get('end_time', ''))
-            
-            time_display_str = "未知時間"
-            if "T" in st_val and "T" in et_val:
-                time_display_str = f"{st_val.replace('T', ' ')} ~ {et_val.split('T')[1]}"
-            elif st_val:
-                time_display_str = st_val.replace('T', ' ')
+        # 移除時間轉換失敗的髒資料
+        df_list = df_list.dropna(subset=['dt_order', 'dt_end_order'])
+        
+        # 🔥 核心修正點：直接抓「此時此刻」，並且用「結束時間」判定！下課了立刻隱形
+        now_time = datetime.now()
+        two_weeks_later = now_time + timedelta(days=14)
+        
+        # 篩選條件：下課時間比現在晚，且上課時間在兩週內
+        df_filtered = df_list[(df_list['dt_end_order'] >= now_time) & (df_list['dt_order'] <= two_weeks_later)]
+        df_filtered = df_filtered.sort_values('dt_order', ascending=True) # 越近的排在最上面
+        
+        if not df_filtered.empty:
+            for idx, row in df_filtered.iterrows():
+                s_id_str = str(row['student_id']).split('.')[0]
+                name_display = student_name_map.get(s_id_str, "未知學生")
+                color_display = student_color_map.get(s_id_str, "#3498DB")
+                
+                st_val = str(row.get('start_time', ''))
+                et_val = str(row.get('end_time', ''))
+                
+                time_display_str = "未知時間"
+                if "T" in st_val and "T" in et_val:
+                    time_display_str = f"{st_val.replace('T', ' ')} ~ {et_val.split('T')[1]}"
+                elif st_val:
+                    time_display_str = st_val.replace('T', ' ')
 
-            with st.container(border=True):
-                col_info, col_btn = st.columns([4, 1])
-                with col_info:
-                    st.markdown(f"### <span style='color:{color_display};'>●</span> **{name_display}**", unsafe_allow_html=True)
-                    st.caption(f"⏰ {time_display_str}")
-                    if row.get('progress', ""): st.info(f"📝 {row['progress']}")
-                with col_btn:
-                    if st.button("🗑️ 刪除", key=f"del_sess_{row['id']}"):
-                        if row.get('google_event_id', ""):
-                            delete_google_event(row['google_event_id'])
-                        df_sess = df_sess[df_sess['id'] != row['id']]
-                        save_to_cloud("sessions", df_sess)
-                        st.toast("已移除該堂課程")
-                        st.rerun()
+                with st.container(border=True):
+                    col_info, col_btn = st.columns([4, 1])
+                    with col_info:
+                        st.markdown(f"### <span style='color:{color_display};'>●</span> **{name_display}**", unsafe_allow_html=True)
+                        st.caption(f"⏰ {time_display_str}")
+                        if row.get('progress', ""): st.info(f"📝 {row['progress']}")
+                    with col_btn:
+                        if st.button("🗑️ 刪除", key=f"del_sess_{row['id']}"):
+                            if row.get('google_event_id', ""):
+                                delete_google_event(row['google_event_id'])
+                            df_sess = df_sess[df_sess['id'] != row['id']]
+                            save_to_cloud("sessions", df_sess)
+                            st.toast("已移除該堂課程")
+                            st.rerun()
+        else:
+            st.info("🎯 未來兩週內目前沒有排課行程。")
     else:
         st.info("目前沒有任何排課紀錄。")
 
