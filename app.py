@@ -95,7 +95,7 @@ def save_to_cloud(worksheet_name, df):
     except Exception as e:
         st.error(f"雲端寫入失敗，請檢查網路: {e}")
 
-# --- Google 日曆串接 ---
+# --- Google 日曆串接 (🔥升級：解除靜音，回報真實錯誤) ---
 def create_google_event(title, start_dt, end_dt):
     if service is None: return ""
     try:
@@ -105,7 +105,9 @@ def create_google_event(title, start_dt, end_dt):
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
         }).execute()
         return event.get('id', "")
-    except: return ""
+    except Exception as e:
+        st.toast(f"⚠️ Google 日曆新增失敗: {e}", icon="❌")
+        return ""
 
 def update_google_event(event_id, title, start_dt, end_dt):
     if service is None or not event_id: return False
@@ -116,14 +118,18 @@ def update_google_event(event_id, title, start_dt, end_dt):
             'end': {'dateTime': end_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
         }).execute()
         return True
-    except: return False
+    except Exception as e:
+        st.toast(f"⚠️ Google 日曆更新失敗: {e}", icon="❌")
+        return False
 
 def delete_google_event(event_id):
     if service is None or not event_id: return False
     try:
         service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event_id).execute()
         return True
-    except: return False
+    except Exception as e:
+        st.toast(f"⚠️ Google 日曆刪除失敗: {e}", icon="❌")
+        return False
 
 
 # ==========================================
@@ -136,7 +142,7 @@ df_sess = get_cloud_data("sessions")
 df_inv = get_cloud_data("invoices")
 df_stats = get_cloud_data("stats")
 
-# 建立超級雙向識別字典，避免任何型態不合或名字對不上的報錯
+# 建立雙向名字/ID 識別字典
 student_name_map = {}
 student_rate_map = {}
 student_color_map = {}
@@ -210,7 +216,6 @@ with tab1:
         df_calc['start_dt'] = pd.to_datetime(df_calc['start_time'], errors='coerce')
         df_calc['end_dt'] = pd.to_datetime(df_calc['end_time'], errors='coerce')
         df_calc = df_calc.dropna(subset=['start_dt'])
-        # 補全空白的結束時間防止算薪水出錯
         df_calc['end_dt'] = df_calc['end_dt'].fillna(df_calc['start_dt'] + timedelta(hours=1.5))
         df_calc = df_calc[~df_calc['status'].isin(['請假', '已取消'])]
         
@@ -347,7 +352,7 @@ with tab2:
                             time.sleep(1)
                             st.rerun()
 
-    # --- 🔥 核心修復：未來無限視野與時間容錯解析 ---
+    # --- 課表列表總覽 ---
     st.divider()
     st.subheader("📋 未來所有課表總覽 (調課/請假中心)")
     
@@ -356,9 +361,8 @@ with tab2:
         df_list['dt_order'] = pd.to_datetime(df_list['start_time'], errors='coerce')
         df_list['dt_end_order'] = pd.to_datetime(df_list['end_time'], errors='coerce')
         
-        # 💡 防爆點 1：如果結束時間損壞或空白，自動用開始時間補齊 1.5 小時，絕不丟失行數
         df_list['dt_end_order'] = df_list['dt_end_order'].fillna(df_list['dt_order'] + timedelta(hours=1.5))
-        df_list = df_list.dropna(subset=['dt_order']) # 只要開始時間對，就強迫抓出來
+        df_list = df_list.dropna(subset=['dt_order']) 
         
         now_time = datetime.now()
         df_filtered = df_list[df_list['dt_end_order'] >= now_time]
@@ -367,10 +371,15 @@ with tab2:
         if not df_filtered.empty:
             for idx, row in df_filtered.iterrows():
                 raw_sid = str(row['student_id']).strip().split('.')[0]
-                # 💡 防爆點 2：雙向對照，不管是名字還是 ID 都能完美對應
                 s_id_str = student_name_to_id.get(raw_sid, raw_sid)
                 name_display = student_name_map.get(s_id_str, "未知學生")
                 color_display = student_color_map.get(s_id_str, "#3498DB")
+                
+                # 🔥 核心修正防線 1：徹底融解 Pandas NaN 轉字串成 "nan" 的問題
+                raw_gid = row.get('google_event_id')
+                gid = ""
+                if pd.notna(raw_gid) and str(raw_gid).strip().lower() not in ["", "nan", "none", "0", "0.0"]:
+                    gid = str(raw_gid).strip()
                 
                 status_icon = "⚠️ (請假)" if row.get('status') == "請假" else "❌ (取消)" if row.get('status') == "已取消" else ""
                 panel_title = f"{row['dt_order'].strftime('%m/%d %H:%M')} │ 🧑‍🎓 {name_display} {status_icon}"
@@ -380,7 +389,7 @@ with tab2:
                         n_dt = st.date_input("日期", row['dt_order'].date())
                         n_st = st.time_input("開始時間", row['dt_order'].time())
                         old_dur = (row['dt_end_order'] - row['dt_order']).total_seconds() / 3600
-                        n_dur = st.slider("時數", 0.5, 4.0, float(old_dur) if float(old_dur).is_integer() else 1.5, 0.5, key=f"d_{row['id']}")
+                        n_dur = st.slider("時數", 0.5, 4.0, float(old_dur) if float(old_dur)>=0.5 else 1.5, 0.5, key=f"d_{row['id']}")
                         
                         curr_status = row.get('status', '已預約')
                         if curr_status not in ["已預約", "請假", "已取消", "已完成"]: curr_status = "已預約"
@@ -396,7 +405,7 @@ with tab2:
                             df_sess.loc[df_sess['id']==row['id'], 'status'] = n_stt
                             df_sess.loc[df_sess['id']==row['id'], 'progress'] = n_prog
                             
-                            gid = row.get('google_event_id', "")
+                            # 🔥 核心修正防線 2：修改與請假狀態完美同步 Google 日曆
                             if n_stt in ["請假", "已取消"]:
                                 if gid:
                                     delete_google_event(gid)
@@ -409,7 +418,6 @@ with tab2:
                             st.rerun()
                             
                     if st.button("🗑️ 徹底刪除", key=f"delete_btn_{row['id']}"):
-                        gid = row.get('google_event_id', "")
                         if gid: delete_google_event(gid)
                         df_sess = df_sess[df_sess['id'] != row['id']]
                         save_to_cloud("sessions", df_sess)
@@ -547,7 +555,6 @@ with tab4:
             
             my_all_lessons = pd.DataFrame()
             if not df_sess.empty and 'student_id' in df_sess.columns:
-                # 智慧全向過濾：支援直接用名字或 ID 作為篩選條件
                 df_sess['resolved_sid'] = df_sess['student_id'].astype(str).str.strip().str.split('.').str[0].map(lambda x: student_name_to_id.get(x, x))
                 my_all_lessons = df_sess[df_sess['resolved_sid'] == s_id_str].copy()
             
