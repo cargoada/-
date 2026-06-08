@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 
-# 外部套件 (🔥 已徹底拔除容易當機的 streamlit_calendar)
+# 外部套件 
 from streamlit_gsheets import GSheetsConnection
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -251,7 +251,7 @@ with tab1:
         col3.metric("歷史總收入", f"${int(hist_offset):,}")
         st.info("目前沒有現有課程資料，圖表將在排課後顯示。")
 
-# ================= Tab 2: 排課 (🔥 大改版：原生看板取代日曆) =================
+# ================= Tab 2: 排課 =================
 with tab2:
     df_stu = st.session_state.db_stu.copy()
     df_sess = st.session_state.db_sess.copy()
@@ -399,7 +399,7 @@ with tab2:
 
     st.divider()
     c_head, c_ref = st.columns([4, 1])
-    c_head.subheader("🗓️ 近期課表與總覽 (原生加速版)")
+    c_head.subheader("🗓️ 近期課表與總覽")
     if c_ref.button("🔄 重整畫面"): 
         st.cache_data.clear()
         st.rerun()
@@ -427,7 +427,7 @@ with tab2:
                     with st.container(border=True):
                         st.markdown(f"**📅 {d_str} (星期{wd})**")
                         for _, r in group.iterrows():
-                            sid = int(r['id_x'])
+                            sid = int(r.get('id_x', 0))
                             s_time = r['s_dt_safe'].strftime('%H:%M')
                             e_time = r['e_dt_safe'].strftime('%H:%M')
                             s_name = r.get('name', '未知')
@@ -455,8 +455,13 @@ with tab2:
             df_table['日期'] = df_table['s_dt_safe'].dt.strftime('%Y-%m-%d')
             df_table['時間'] = df_table['s_dt_safe'].dt.strftime('%H:%M') + " - " + df_table['e_dt_safe'].dt.strftime('%H:%M')
             df_table['學生'] = df_table.get('name', '未知')
-            df_table['狀態'] = df_table['status']
-            df_table['同步日曆'] = df_table['google_event_id'].apply(lambda x: "✅" if pd.notna(x) and x != "" else "❌")
+            
+            # 🔥 防禦 KeyError: 強制確保這些欄位存在，就算空白也給預設值
+            df_table['狀態'] = df_table.get('status', '已預約')
+            df_table['google_event_id'] = df_table.get('google_event_id', "")
+            df_table['progress'] = df_table.get('progress', "")
+            
+            df_table['同步日曆'] = df_table['google_event_id'].apply(lambda x: "✅" if pd.notna(x) and str(x).strip() != "" else "❌")
             
             st.dataframe(
                 df_table[['日期', '時間', '學生', '狀態', '同步日曆', 'progress']],
