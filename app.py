@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
 
-st.set_page_config(page_title="家教排課系統 v2.4", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v2.5", page_icon="📅", layout="centered")
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
@@ -36,7 +36,7 @@ except:
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 2.4")
+    st.title("👋 歡迎使用排課系統 2.5")
     if "users" in st.secrets:
         user_dict = st.secrets["users"]
         selected_login = st.selectbox("請選擇您的身分", list(user_dict.keys()))
@@ -54,7 +54,7 @@ CURRENT_SHEET_URL = st.secrets["users"][CURRENT_USER]
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 3. 點對點無快取讀寫模組 (防彈 Schema Enforcer)
+# 3. 點對點無快取讀寫模組 
 # ==========================================
 def get_cloud_data(worksheet_name):
     try:
@@ -84,7 +84,6 @@ def get_cloud_data(worksheet_name):
 
         return df.copy()
     except Exception as e:
-        print(f"Fetch Error ({worksheet_name}): {e}")
         return pd.DataFrame()
 
 def save_to_cloud(worksheet_name, df):
@@ -95,7 +94,7 @@ def save_to_cloud(worksheet_name, df):
     except Exception as e:
         st.error(f"雲端寫入失敗，請檢查網路: {e}")
 
-# --- Google 日曆串接 (🔥升級：解除靜音，回報真實錯誤) ---
+# --- Google 日曆串接 ---
 def create_google_event(title, start_dt, end_dt):
     if service is None: return ""
     try:
@@ -172,7 +171,6 @@ with st.sidebar:
 with tab1:
     st.subheader("📊 營收動態與行程追蹤")
     
-    # --- 小日曆區塊 ---
     with st.container(border=True):
         st.markdown("### 📅 老師小日曆")
         cal_date = st.date_input("點擊下方日曆切換日期，可查看當天課表：", datetime.now(), label_visibility="collapsed")
@@ -205,7 +203,6 @@ with tab1:
             
     st.divider()
     
-    # --- 營收區塊 ---
     hist_offset = 0
     if not df_stats.empty and 'cumulative_offset' in df_stats.columns:
         try: hist_offset = float(df_stats['cumulative_offset'].iloc[0])
@@ -352,6 +349,49 @@ with tab2:
                             time.sleep(1)
                             st.rerun()
 
+        # --- 🔥 全新：批量刪除多堂課程 ---
+        with st.expander("🧹 批量秒殺【多堂】課程 (清理錯誤排課)"):
+            st.markdown("請在下方勾選你想一次刪除的課程：")
+            if not df_sess.empty:
+                df_del = df_sess.copy()
+                df_del['dt_order'] = pd.to_datetime(df_del['start_time'], errors='coerce')
+                df_del = df_del.dropna(subset=['dt_order']).sort_values('dt_order', ascending=False)
+                
+                del_options_map = {}
+                for _, r in df_del.iterrows():
+                    raw_sid = str(r['student_id']).strip().split('.')[0]
+                    s_id_str = student_name_to_id.get(raw_sid, raw_sid)
+                    s_name = student_name_map.get(s_id_str, "未知")
+                    # 建立選單標籤: "2026-06-15 14:00 | 🧑‍🎓 沛倢 (ID: 15)"
+                    label = f"{r['dt_order'].strftime('%Y-%m-%d %H:%M')} | 🧑‍🎓 {s_name} (編號:{r['id']})"
+                    del_options_map[label] = r['id']
+                
+                selected_to_delete = st.multiselect("選取要刪除的課程 (可多選)", list(del_options_map.keys()))
+                
+                if st.button("🚨 確認批量刪除", type="primary"):
+                    if selected_to_delete:
+                        ids_to_del = [del_options_map[k] for k in selected_to_delete]
+                        with st.spinner(f"🧹 正在批次清除 {len(ids_to_del)} 堂雲端資料與日曆，請稍候..."):
+                            for del_id in ids_to_del:
+                                row_to_del = df_sess[df_sess['id'] == del_id]
+                                if not row_to_del.empty:
+                                    raw_gid = row_to_del.iloc[0].get('google_event_id', "")
+                                    gid = str(raw_gid).strip() if pd.notna(raw_gid) and str(raw_gid).strip().lower() not in ["", "nan", "none"] else ""
+                                    if gid:
+                                        delete_google_event(gid)
+                                        time.sleep(0.15) # 🛡️ 給 Google API 喘息的冷卻時間
+                            
+                            df_sess = df_sess[~df_sess['id'].isin(ids_to_del)]
+                            save_to_cloud("sessions", df_sess)
+                            
+                        st.success(f"✅ 成功秒殺 {len(ids_to_del)} 堂課程！")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.warning("請先從上方選單中選取至少一堂課喔！")
+            else:
+                st.info("目前沒有課程可供刪除。")
+
     # --- 課表列表總覽 ---
     st.divider()
     st.subheader("📋 未來所有課表總覽 (調課/請假中心)")
@@ -375,7 +415,6 @@ with tab2:
                 name_display = student_name_map.get(s_id_str, "未知學生")
                 color_display = student_color_map.get(s_id_str, "#3498DB")
                 
-                # 🔥 核心修正防線 1：徹底融解 Pandas NaN 轉字串成 "nan" 的問題
                 raw_gid = row.get('google_event_id')
                 gid = ""
                 if pd.notna(raw_gid) and str(raw_gid).strip().lower() not in ["", "nan", "none", "0", "0.0"]:
@@ -396,31 +435,38 @@ with tab2:
                         n_stt = st.selectbox("狀態", ["已預約", "請假", "已取消", "已完成"], index=["已預約", "請假", "已取消", "已完成"].index(curr_status))
                         n_prog = st.text_area("進度/備註", value=row.get('progress', ''))
                         
-                        if st.form_submit_button("💾 更新此堂課", type="primary"):
-                            n_start_dt = datetime.combine(n_dt, n_st)
-                            n_end_dt = n_start_dt + timedelta(hours=n_dur)
-                            
-                            df_sess.loc[df_sess['id']==row['id'], 'start_time'] = n_start_dt.strftime('%Y-%m-%dT%H:%M:%S')
-                            df_sess.loc[df_sess['id']==row['id'], 'end_time'] = n_end_dt.strftime('%Y-%m-%dT%H:%M:%S')
-                            df_sess.loc[df_sess['id']==row['id'], 'status'] = n_stt
-                            df_sess.loc[df_sess['id']==row['id'], 'progress'] = n_prog
-                            
-                            # 🔥 核心修正防線 2：修改與請假狀態完美同步 Google 日曆
-                            if n_stt in ["請假", "已取消"]:
-                                if gid:
-                                    delete_google_event(gid)
-                                    df_sess.loc[df_sess['id']==row['id'], 'google_event_id'] = ""
-                            else:
-                                if gid:
-                                    update_google_event(gid, f"家教: {name_display}", n_start_dt, n_end_dt)
-                                    
-                            save_to_cloud("sessions", df_sess)
+                        col_upd, col_del = st.columns([3, 1])
+                        
+                        if col_upd.form_submit_button("💾 更新此堂課", type="primary"):
+                            # 🛡️ 加上防護罩與轉圈圈
+                            with st.spinner("💾 正在與雲端同步更新中，請稍候..."):
+                                n_start_dt = datetime.combine(n_dt, n_st)
+                                n_end_dt = n_start_dt + timedelta(hours=n_dur)
+                                
+                                df_sess.loc[df_sess['id']==row['id'], 'start_time'] = n_start_dt.strftime('%Y-%m-%dT%H:%M:%S')
+                                df_sess.loc[df_sess['id']==row['id'], 'end_time'] = n_end_dt.strftime('%Y-%m-%dT%H:%M:%S')
+                                df_sess.loc[df_sess['id']==row['id'], 'status'] = n_stt
+                                df_sess.loc[df_sess['id']==row['id'], 'progress'] = n_prog
+                                
+                                if n_stt in ["請假", "已取消"]:
+                                    if gid:
+                                        delete_google_event(gid)
+                                        df_sess.loc[df_sess['id']==row['id'], 'google_event_id'] = ""
+                                else:
+                                    if gid:
+                                        update_google_event(gid, f"家教: {name_display}", n_start_dt, n_end_dt)
+                                        
+                                save_to_cloud("sessions", df_sess)
+                                time.sleep(0.5) # 🛡️ 給 Google API 冷卻
                             st.rerun()
                             
                     if st.button("🗑️ 徹底刪除", key=f"delete_btn_{row['id']}"):
-                        if gid: delete_google_event(gid)
-                        df_sess = df_sess[df_sess['id'] != row['id']]
-                        save_to_cloud("sessions", df_sess)
+                        # 🛡️ 加上防護罩與轉圈圈
+                        with st.spinner("🗑️ 正在清除雲端資料與日曆，請稍候..."):
+                            if gid: delete_google_event(gid)
+                            df_sess = df_sess[df_sess['id'] != row['id']]
+                            save_to_cloud("sessions", df_sess)
+                            time.sleep(0.5) # 🛡️ 給 Google API 冷卻
                         st.rerun()
         else:
             st.info("🎯 目前沒有任何未來的排課行程。")
