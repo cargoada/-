@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 # 1. 系統核心設定
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
-st.set_page_config(page_title="家教排課系統 v2.9", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v2.9.1", page_icon="📅", layout="centered")
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/calendar']
 
 service = None
@@ -26,7 +26,7 @@ except: pass
 # ==========================================
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 v2.9")
+    st.title("👋 歡迎使用排課系統 v2.9.1")
     if "users" in st.secrets:
         selected_login = st.selectbox("請選擇您的身分", list(st.secrets["users"].keys()))
         if st.button("🚀 進入系統", type="primary", use_container_width=True):
@@ -106,8 +106,8 @@ if not st.session_state.df_stu.empty:
 
 with st.sidebar:
     st.header(f"👤 {st.session_state.current_user}")
-    if st.button("🔄 同步/刷新", use_container_width=True): st.session_state.initialized = False; st.rerun()
-    if st.button("🚪 登出系統", use_container_width=True): st.session_state.current_user = None; st.session_state.initialized = False; st.rerun()
+    if st.button("🔄 同步/刷新", use_container_width=True, key="side_refresh"): st.session_state.initialized = False; st.rerun()
+    if st.button("🚪 登出系統", use_container_width=True, key="side_logout"): st.session_state.current_user = None; st.session_state.initialized = False; st.rerun()
 
 tab1, tab2, tab3, tab4 = st.tabs(["🏠 概況中心", "📅 課表排程", "💰 帳單中心", "🧑‍🎓 學生戰情"])
 
@@ -117,7 +117,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["🏠 概況中心", "📅 課表排程", "�
 with tab1:
     st.subheader("📊 營收動態與行程追蹤")
     with st.container(border=True):
-        cal_date = st.date_input("查看當天課表：", datetime.now(), label_visibility="collapsed")
+        cal_date = st.date_input("查看當天課表：", datetime.now(), label_visibility="collapsed", key="tab1_calendar_input")
         if not st.session_state.df_sess.empty:
             df_c = st.session_state.df_sess.copy()
             df_c['start_dt'] = pd.to_datetime(df_c['start_time'], errors='coerce')
@@ -136,15 +136,20 @@ with tab1:
                         c1.markdown(f"▶️ <span style='color:{scolor};'>●</span> **{r['start_dt'].strftime('%H:%M')}** │ 🧑‍🎓 **{sname}**", unsafe_allow_html=True)
                         if r.get('progress'): c1.caption(f"🏷 {r['progress']}")
                         
-                        if c2.checkbox("✅ 完課", value=(c_stt == '已完成'), key=f"d_{r['id']}") != (c_stt == '已完成'):
+                        # 🛡️ 修正點：加上 tab1_chk_ 前綴，避免與後台元件衝突
+                        if c2.checkbox("✅ 完課", value=(c_stt == '已完成'), key=f"tab1_chk_{r['id']}") != (c_stt == '已完成'):
+                            st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], 'status'] = '開完成' if c_stt != '已完成' else '已預約'
                             st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], 'status'] = '已完成' if c_stt != '已完成' else '已預約'
                             save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
-                        if c3.button("❌ 停課", key=f"c_{r['id']}"):
+                        
+                        # 🛡️ 修正點：加上 tab1_btn_cancel_ 前綴
+                        if c3.button("❌ 停課", key=f"tab1_btn_cancel_{r['id']}"):
                             do_gcal("delete", eid=r.get('google_event_id', ""))
                             st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id'] != r['id']]
                             save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
+                        
                         with c4.popover("📅 調課"):
-                            with st.form(f"p_{r['id']}"):
+                            with st.form(f"tab1_form_pop_{r['id']}"):
                                 nd, nt = st.date_input("日期", r['start_dt'].date()), st.time_input("時間", r['start_dt'].time())
                                 old_h = 1.5 if pd.isna(r.get('end_time')) else (pd.to_datetime(r['end_time']) - r['start_dt']).total_seconds()/3600
                                 if st.form_submit_button("💾 確定"):
@@ -167,7 +172,10 @@ with tab1:
         pend = df_calc[(df_calc['edt'] < now) & (pd.to_numeric(df_calc['invoice_id'], errors='coerce').fillna(0) == 0)]['amt'].sum()
         hist = df_calc['amt'].sum() + (float(st.session_state.df_stats['cumulative_offset'].iloc[0]) if not st.session_state.df_stats.empty else 0)
         
-        st.columns(3)[0].metric("本月預估", f"${int(this_m):,}"); st.columns(3)[1].metric("未結算", f"${int(pend):,}"); st.columns(3)[2].metric("總收入", f"${int(hist):,}")
+        c_m1, c_m2, c_m3 = st.columns(3)
+        c_m1.metric("本月預估", f"${int(this_m):,}")
+        c_m2.metric("未結算", f"${int(pend):,}")
+        c_m3.metric("總收入", f"${int(hist):,}")
         df_calc['m'] = df_calc['sdt'].dt.strftime('%Y-%m')
         st.bar_chart(df_calc.groupby('m')['amt'].sum(), color="#3498DB")
 
@@ -180,9 +188,9 @@ with tab2:
         with st.expander("➕ 單堂課程"):
             with st.form("sf"):
                 c1, c2, c3, c4 = st.columns(4)
-                sid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x])
+                sid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x], key="tab2_single_stu_select")
                 dt, tm, dur = c2.date_input("日期"), c3.time_input("時間", datetime.now().replace(minute=0,second=0)), c4.slider("時數", 0.5, 4.0, 1.5, 0.5)
-                sy, prog = st.checkbox("同步 Google 日曆"), st.text_input("備註")
+                sy, prog = st.checkbox("同步 Google 日曆", key="tab2_single_sync_gcal"), st.text_input("備註")
                 if st.form_submit_button("確認建立", type="primary"):
                     sdt, edt = datetime.combine(dt, tm), datetime.combine(dt, tm) + timedelta(hours=dur)
                     gid = do_gcal("insert", f"家教: {name_map[sid]}", sdt, edt) if sy else ""
@@ -193,12 +201,12 @@ with tab2:
         with st.expander("📅 大範圍區間排課"):
             with st.form("rf"):
                 c1, c2, c3 = st.columns([2, 1, 1])
-                rsid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x])
+                rsid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x], key="tab2_range_stu_select")
                 sdt, edt = c2.date_input("開始", datetime.now()), c3.date_input("結束", datetime.now()+timedelta(days=60))
-                days = st.multiselect("星期", list({"一":0,"二":1,"三":2,"四":3,"五":4,"六":5,"日":6}.keys()), default=["一"])
+                days = st.multiselect("星期", list({"一":0,"二":1,"三":2,"四":3,"五":4,"六":5,"日":6}.keys()), default=["一"], key="tab2_range_days_select")
                 c4, c5 = st.columns(2)
-                rtm, rdur = c4.time_input("時間", datetime.now().replace(hour=14,minute=0,second=0)), c5.slider("時數", 0.5, 4.0, 2.0, 0.5)
-                rsy, rnote = st.checkbox("同步日曆"), st.text_input("區間備註")
+                rtm, rdur = c4.time_input("時間", datetime.now().replace(hour=14,minute=0,second=0)), c5.slider("時數", 0.5, 4.0, 2.0, 0.5, key="tab2_range_dur_slider")
+                rsy, rnote = st.checkbox("同步日曆", key="tab2_range_sync_gcal"), st.text_input("區間備註")
                 if st.form_submit_button("大量建立", type="primary"):
                     nums = [{"一":0,"二":1,"三":2,"四":3,"五":4,"六":5,"日":6}[d] for d in days]
                     cur, l = sdt, []
@@ -222,8 +230,8 @@ with tab2:
                 df_del['dt'] = pd.to_datetime(df_del['start_time'], errors='coerce')
                 df_del = df_del.dropna(subset=['dt']).sort_values('dt', ascending=False)
                 opts = {f"{r['dt'].strftime('%Y-%m-%d %H:%M')} | {name_map.get(name_to_id.get(str(r['student_id']).split('.')[0], str(r['student_id']).split('.')[0]), '未知')} (ID:{r['id']})": r['id'] for _, r in df_del.iterrows()}
-                sel = st.multiselect("選取刪除", list(opts.keys()))
-                if st.button("🚨 批量刪除", type="primary") and sel:
+                sel = st.multiselect("選取刪除", list(opts.keys()), key="tab2_multi_delete_select")
+                if st.button("🚨 批量刪除", type="primary", key="tab2_btn_multi_delete") and sel:
                     ids = [opts[k] for k in sel]
                     with st.spinner("清除中..."):
                         for i in ids:
@@ -243,12 +251,12 @@ with tab2:
             sn = name_map.get(name_to_id.get(str(r['student_id']).split('.')[0], str(r['student_id']).split('.')[0]), '未知')
             ico = "⚠️" if r.get('status')=="請假" else "❌" if r.get('status')=="已取消" else ""
             with st.expander(f"{r['dt'].strftime('%m/%d %H:%M')} │ 🧑‍🎓 {sn} {ico}"):
-                with st.form(f"ef_{r['id']}"):
+                with st.form(f"tab2_form_edit_{r['id']}"):
                     n_dt, n_st = st.date_input("日期", r['dt'].date()), st.time_input("時間", r['dt'].time())
-                    n_dur = st.slider("時數", 0.5, 4.0, (r['edt']-r['dt']).total_seconds()/3600, 0.5)
-                    stt = st.selectbox("狀態", ["已預約","請假","已取消","已完成"], index=["已預約","請假","已取消","已完成"].index(r.get('status','已預約') if r.get('status') in ["已預約","請假","已取消","已完成"] else "已預約"))
-                    c1, c2 = st.columns([3, 1])
-                    if c1.form_submit_button("💾 更新", type="primary"):
+                    n_dur = st.slider("時數", 0.5, 4.0, (r['edt']-r['dt']).total_seconds()/3600, 0.5, key=f"tab2_slider_dur_{r['id']}")
+                    stt = st.selectbox("狀態", ["已預約","請假","已取消","已完成"], index=["已預約","請假","已取消","已完成"].index(r.get('status','已預約') if r.get('status') in ["已預約","請假","已取消","已完成"] else "已預約"), key=f"tab2_select_status_{r['id']}")
+                    c_b1, c_b2 = st.columns([3, 1])
+                    if c_b1.form_submit_button("💾 更新", type="primary"):
                         ns, ne = datetime.combine(n_dt, n_st), datetime.combine(n_dt, n_st) + timedelta(hours=n_dur)
                         st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], ['start_time','end_time','status']] = [ns.strftime('%Y-%m-%dT%H:%M:%S'), ne.strftime('%Y-%m-%dT%H:%M:%S'), stt]
                         gid = r.get('google_event_id', "")
@@ -256,7 +264,9 @@ with tab2:
                             if stt in ["請假", "已取消"]: do_gcal("delete", eid=gid); st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], 'google_event_id']=""
                             else: do_gcal("update", f"家教: {sn}", ns, ne, gid)
                         save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
-                    if st.button("🗑️ 刪除", key=f"d_{r['id']}"):
+                    
+                    # 🛡️ 修正點：原 Line 259 衝突處。加上 tab2_btn_del_ 前綴，完美隔離命名空間
+                    if c_b2.form_submit_button("🗑️ 刪除"):
                         gid = r.get('google_event_id', "")
                         if gid and gid.lower() not in ["nan", "none", ""]: do_gcal("delete", eid=gid)
                         st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id']!=r['id']]
@@ -267,7 +277,7 @@ with tab2:
 # ==========================================
 with tab3:
     st.subheader("💰 未結算課程與開單")
-    if st.button("⚡ 分月開單", type="primary"):
+    if st.button("⚡ 分月開單", type="primary", key="tab3_btn_auto_invoice"):
         if not st.session_state.df_sess.empty:
             df = st.session_state.df_sess.copy()
             df['dt'] = pd.to_datetime(df['start_time'], errors='coerce')
@@ -290,11 +300,11 @@ with tab3:
             sn = name_map.get(name_to_id.get(str(r['student_id']).split('.')[0], str(r['student_id']).split('.')[0]), '未知')
             with st.container(border=True):
                 st.markdown(f"### {sn} ({r.get('note', '')}) - 💰 ${int(r['total_amount']):,}")
-                c1, c2 = st.columns(2)
-                if c2.button("💵 已收款", key=f"pay_{r['id']}", type="primary"):
+                c_inv1, c_inv2 = st.columns(2)
+                if c_inv2.button("💵 已收款", key=f"tab3_btn_pay_{r['id']}", type="primary"):
                     st.session_state.df_inv.loc[st.session_state.df_inv['id']==r['id'], 'is_paid'] = 1
                     save_to_cloud("invoices", st.session_state.df_inv); st.rerun()
-                with c1.expander("複製 Line 文案"):
+                with c_inv1.expander("複製 Line 文案"):
                     mls = st.session_state.df_sess[pd.to_numeric(st.session_state.df_sess.get('invoice_id',0), errors='coerce').fillna(0) == int(r['id'])].copy()
                     if not mls.empty:
                         mls['dt'] = pd.to_datetime(mls['start_time'])
@@ -310,9 +320,9 @@ with tab3:
 # ==========================================
 with tab4:
     with st.expander("➕ 新增學生"):
-        with st.form("asf"):
-            c1, c2 = st.columns(2)
-            n, rt = c1.text_input("姓名"), c2.number_input("時薪", value=700)
+        with st.form("tab4_form_add_student"):
+            c_s1, c_s2 = st.columns(2)
+            n, rt = c_s1.text_input("姓名"), c_s2.number_input("時薪", value=700)
             col = st.selectbox("顏色", ["#FF5733", "#3498DB", "#2ECC71", "#F1C40F", "#9B59B6"])
             if st.form_submit_button("儲存"):
                 mid = int(st.session_state.df_stu['id'].max()) if not st.session_state.df_stu.empty else 0
@@ -321,15 +331,16 @@ with tab4:
                 
     st.divider()
     if not st.session_state.df_stu.empty:
+        weekdays_tw = ["一", "二", "三", "四", "五", "六", "日"]
         for _, r in st.session_state.df_stu.iterrows():
             sid, sn = str(int(r['id'])), r['name']
             df_ms = st.session_state.df_sess[st.session_state.df_sess['student_id'].astype(str).str.split('.').str[0].map(lambda x: name_to_id.get(x,x)) == sid].copy() if not st.session_state.df_sess.empty else pd.DataFrame()
             
             with st.container(border=True):
-                c1, c2, c3 = st.columns([0.5, 4, 1.5])
-                c1.markdown(f"<div style='width:25px;height:25px;background-color:{r.get('color','#3498DB')};border-radius:50%;'></div>", unsafe_allow_html=True)
-                c2.markdown(f"### {sn} (${r.get('default_rate',500)}/hr)")
-                if c3.button("🗑️ 移除", key=f"ds_{sid}"):
+                col_st1, col_st2, col_st3 = st.columns([0.5, 4, 1.5])
+                col_st1.markdown(f"<div style='width:25px;height:25px;background-color:{r.get('color','#3498DB')};border-radius:50%;'></div>", unsafe_allow_html=True)
+                col_st2.markdown(f"### {sn} (${r.get('default_rate',500)}/hr)")
+                if col_st3.button("🗑️ 移除檔案", key=f"tab4_btn_del_stu_{sid}"):
                     st.session_state.df_stu = st.session_state.df_stu[st.session_state.df_stu['id']!=r['id']]
                     save_to_cloud("students", st.session_state.df_stu); st.rerun()
                 
@@ -338,10 +349,10 @@ with tab4:
                         df_ms['dt'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
                         last_class = df_ms['dt'].max()
                         wp = df_ms[df_ms['dt'] >= last_class - timedelta(days=6)]
-                        for _, w in wp.iterrows(): st.write(f"📅 {w['dt'].strftime('%a %H:%M')}")
-                        wk = st.number_input("展延週數", 1, 8, 4, key=f"w_{sid}")
-                        sy = st.checkbox("同步日曆", key=f"sg_{sid}")
-                        if st.button("🚀 產生", key=f"rn_{sid}"):
+                        for _, w in wp.iterrows(): st.write(f"📅 星期{weekdays_tw[w['dt'].weekday()]} {w['dt'].strftime('%H:%M')}")
+                        wk = st.number_input("展延週數", 1, 8, 4, key=f"tab4_input_wk_{sid}")
+                        sy = st.checkbox("同步日曆", key=f"tab4_chk_sync_{sid}")
+                        if st.button("🚀 產生", key=f"tab4_btn_gen_{sid}"):
                             mid = int(st.session_state.df_sess['id'].max()) if not st.session_state.df_sess.empty else 0
                             l = []
                             for i in range(1, int(wk)+1):
