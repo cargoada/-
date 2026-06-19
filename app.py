@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
 
-st.set_page_config(page_title="家教排課系統 v2.5", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v2.6", page_icon="📅", layout="centered")
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
@@ -36,7 +36,7 @@ except:
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 2.5")
+    st.title("👋 歡迎使用排課系統 2.6")
     if "users" in st.secrets:
         user_dict = st.secrets["users"]
         selected_login = st.selectbox("請選擇您的身分", list(user_dict.keys()))
@@ -54,21 +54,21 @@ CURRENT_SHEET_URL = st.secrets["users"][CURRENT_USER]
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 3. 點對點無快取讀寫模組 (防彈 Schema Enforcer)
+# 3. 點對點無快取讀寫模組 
 # ==========================================
 def get_cloud_data(worksheet_name):
+    schemas = {
+        "sessions": ['id', 'student_id', 'start_time', 'end_time', 'status', 'actual_rate', 'google_event_id', 'progress', 'invoice_id'],
+        "invoices": ['id', 'student_id', 'total_amount', 'created_at', 'is_paid', 'note'],
+        "students": ['id', 'name', 'default_rate', 'color'],
+        "stats": ['cumulative_offset']
+    }
+    req_cols = schemas.get(worksheet_name, [])
+    
     try:
         df = conn.read(spreadsheet=CURRENT_SHEET_URL, worksheet=worksheet_name, ttl=0)
         if df is None: df = pd.DataFrame()
         
-        schemas = {
-            "sessions": ['id', 'student_id', 'start_time', 'end_time', 'status', 'actual_rate', 'google_event_id', 'progress', 'invoice_id'],
-            "invoices": ['id', 'student_id', 'total_amount', 'created_at', 'is_paid', 'note'],
-            "students": ['id', 'name', 'default_rate', 'color'],
-            "stats": ['cumulative_offset']
-        }
-        
-        req_cols = schemas.get(worksheet_name, [])
         if df.empty:
             return pd.DataFrame(columns=req_cols)
 
@@ -83,9 +83,8 @@ def get_cloud_data(worksheet_name):
         if 'cumulative_offset' in df.columns: df['cumulative_offset'] = pd.to_numeric(df['cumulative_offset'], errors='coerce').fillna(0)
 
         return df.copy()
-    except Exception as e:
-        st.error(f"⚠️ 雲端讀取繁忙，請稍候點擊側邊欄重整。錯誤: {e}")
-        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame(columns=req_cols)
 
 def save_to_cloud(worksheet_name, df):
     df_clean = df.astype(object).fillna("")
@@ -133,7 +132,7 @@ def delete_google_event(event_id):
 
 
 # ==========================================
-# 4. 主程式資料狀態初始化 (🔥 終極大升級：改用 State-Driven 記憶體架構)
+# 4. 主程式資料狀態初始化
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["🏠 概況中心", "📅 課表排程", "💰 帳單中心", "🧑‍🎓 學生戰情"])
 
@@ -172,7 +171,6 @@ if not st.session_state.df_stu.empty and 'id' in st.session_state.df_stu.columns
 with st.sidebar:
     st.header(f"👤 老師：{CURRENT_USER}")
     
-    # 🔥 提供手動強制重整按鈕
     if st.button("🔄 同步/刷新雲端資料", use_container_width=True):
         st.session_state.initialized = False
         st.rerun()
@@ -198,6 +196,7 @@ with tab1:
             df_cal_check = df_cal_check.dropna(subset=['start_dt_safe'])
             
             target_date_str = cal_date.strftime('%Y-%m-%d')
+            # 過濾掉已經取消的課，達成「沒上課就消掉」的效果
             df_today_lessons = df_cal_check[(df_cal_check['start_dt_safe'].dt.strftime('%Y-%m-%d') == target_date_str) & (df_cal_check['status'] != '已取消')]
             df_today_lessons = df_today_lessons.sort_values('start_dt_safe')
             
@@ -210,9 +209,39 @@ with tab1:
                     l_color = student_color_map.get(s_id_str, "#3498DB")
                     
                     s_time = l_row['start_dt_safe'].strftime('%H:%M')
-                    st.markdown(f"▶️ `<span style='color:{l_color};'>●</span>` **{s_time}** │ 🧑‍🎓 **{l_name}** {'(請假)' if l_row.get('status') == '請假' else ''}", unsafe_allow_html=True)
-                    if l_row.get('progress', ""):
-                        st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;🏷 *備註：{l_row['progress']}")
+                    curr_status = l_row.get('status', '已預約')
+                    
+                    # 🔥 升級亮點：互動式快捷打卡面板
+                    with st.container(border=True):
+                        c_info, c_check, c_cancel = st.columns([5, 2, 2])
+                        with c_info:
+                            st.markdown(f"▶️ <span style='color:{l_color};'>●</span> **{s_time}** │ 🧑‍🎓 **{l_name}** {'(請假)' if curr_status == '請假' else ''}", unsafe_allow_html=True)
+                            if l_row.get('progress', ""):
+                                st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;🏷 *備註：{l_row['progress']}")
+                        
+                        with c_check:
+                            is_done = st.checkbox("✅ 完課", value=(curr_status == '已完成'), key=f"done_{l_row['id']}")
+                            # 如果勾選了，但狀態還不是已完成 -> 更新狀態為已完成
+                            if is_done and curr_status != '已完成':
+                                st.session_state.df_sess.loc[st.session_state.df_sess['id']==l_row['id'], 'status'] = '已完成'
+                                save_to_cloud("sessions", st.session_state.df_sess)
+                                st.rerun()
+                            # 如果取消勾選，但狀態是已完成 -> 恢復成已預約
+                            elif not is_done and curr_status == '已完成':
+                                st.session_state.df_sess.loc[st.session_state.df_sess['id']==l_row['id'], 'status'] = '已預約'
+                                save_to_cloud("sessions", st.session_state.df_sess)
+                                st.rerun()
+                                
+                        with c_cancel:
+                            if st.button("❌ 停課", key=f"cancel_{l_row['id']}", help="點擊將取消此堂課，並從今日課表隱藏"):
+                                with st.spinner("隱藏中..."):
+                                    st.session_state.df_sess.loc[st.session_state.df_sess['id']==l_row['id'], 'status'] = '已取消'
+                                    gid = l_row.get('google_event_id', "")
+                                    if gid:
+                                        delete_google_event(gid)
+                                        st.session_state.df_sess.loc[st.session_state.df_sess['id']==l_row['id'], 'google_event_id'] = ""
+                                    save_to_cloud("sessions", st.session_state.df_sess)
+                                st.rerun()
             else:
                 st.write("🏝️ 這天目前沒有排課，好好休息一下吧！")
         else:
@@ -373,34 +402,4 @@ with tab2:
                 df_del = st.session_state.df_sess.copy()
                 df_del['dt_order'] = pd.to_datetime(df_del['start_time'], errors='coerce')
                 df_del = df_del.dropna(subset=['dt_order']).sort_values('dt_order', ascending=False)
-                
-                del_options_map = {}
-                for _, r in df_del.iterrows():
-                    raw_sid = str(r['student_id']).strip().split('.')[0]
-                    s_id_str = student_name_to_id.get(raw_sid, raw_sid)
-                    s_name = student_name_map.get(s_id_str, "未知")
-                    label = f"{r['dt_order'].strftime('%Y-%m-%d %H:%M')} | 🧑‍🎓 {s_name} (編號:{r['id']})"
-                    del_options_map[label] = r['id']
-                
-                selected_to_delete = st.multiselect("選取要刪除的課程 (可多選)", list(del_options_map.keys()))
-                
-                if st.button("🚨 確認批量刪除", type="primary"):
-                    if selected_to_delete:
-                        ids_to_del = [del_options_map[k] for k in selected_to_delete]
-                        with st.spinner(f"🧹 正在批次清除 {len(ids_to_del)} 堂雲端資料與日曆，請稍候..."):
-                            for del_id in ids_to_del:
-                                row_to_del = st.session_state.df_sess[st.session_state.df_sess['id'] == del_id]
-                                if not row_to_del.empty:
-                                    raw_gid = row_to_del.iloc[0].get('google_event_id', "")
-                                    gid = str(raw_gid).strip() if pd.notna(raw_gid) and str(raw_gid).strip().lower() not in ["", "nan", "none"] else ""
-                                    if gid:
-                                        delete_google_event(gid)
-                                        time.sleep(0.15) 
-                            
-                            # 🔥 直接同步修改本地記憶體狀態，防畫面崩潰
-                            st.session_state.df_sess = st.session_state.df_sess[~st.session_state.df_sess['id'].isin(ids_to_del)]
-                            save_to_cloud("sessions", st.session_state.df_sess)
-                            
-                        st.success(f"✅ 成功秒殺 {len(ids_to_del)} 堂課程！")
-                        time.sleep(1)
-        
+             
