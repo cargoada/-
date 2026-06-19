@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 # 1. 系統核心設定
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
-st.set_page_config(page_title="家教排課系統 v2.9.1", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v2.9.2", page_icon="📅", layout="centered")
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/calendar']
 
 service = None
@@ -26,7 +26,7 @@ except: pass
 # ==========================================
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 v2.9.1")
+    st.title("👋 歡迎使用排課系統 v2.9.2")
     if "users" in st.secrets:
         selected_login = st.selectbox("請選擇您的身分", list(st.secrets["users"].keys()))
         if st.button("🚀 進入系統", type="primary", use_container_width=True):
@@ -136,13 +136,10 @@ with tab1:
                         c1.markdown(f"▶️ <span style='color:{scolor};'>●</span> **{r['start_dt'].strftime('%H:%M')}** │ 🧑‍🎓 **{sname}**", unsafe_allow_html=True)
                         if r.get('progress'): c1.caption(f"🏷 {r['progress']}")
                         
-                        # 🛡️ 修正點：加上 tab1_chk_ 前綴，避免與後台元件衝突
                         if c2.checkbox("✅ 完課", value=(c_stt == '已完成'), key=f"tab1_chk_{r['id']}") != (c_stt == '已完成'):
-                            st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], 'status'] = '開完成' if c_stt != '已完成' else '已預約'
                             st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], 'status'] = '已完成' if c_stt != '已完成' else '已預約'
                             save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
                         
-                        # 🛡️ 修正點：加上 tab1_btn_cancel_ 前綴
                         if c3.button("❌ 停課", key=f"tab1_btn_cancel_{r['id']}"):
                             do_gcal("delete", eid=r.get('google_event_id', ""))
                             st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id'] != r['id']]
@@ -191,12 +188,11 @@ with tab2:
                 sid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x], key="tab2_single_stu_select")
                 dt, tm, dur = c2.date_input("日期"), c3.time_input("時間", datetime.now().replace(minute=0,second=0)), c4.slider("時數", 0.5, 4.0, 1.5, 0.5)
                 sy, prog = st.checkbox("同步 Google 日曆", key="tab2_single_sync_gcal"), st.text_input("備註")
-                                if st.form_submit_button("確認建立", type="primary"):
+                if st.form_submit_button("確認建立", type="primary"):
                     sdt, edt = datetime.combine(dt, tm), datetime.combine(dt, tm) + timedelta(hours=dur)
                     gid = do_gcal("insert", f"家教: {name_map[sid]}", sdt, edt) if sy else ""
                     mid = int(st.session_state.df_sess['id'].max()) if not st.session_state.df_sess.empty else 0
                     
-                    # 🔥 修正點 1：改用 DataFrame 合併，無視任何多餘的暫存欄位，絕對不會報錯！
                     new_lesson = pd.DataFrame([{
                         'id': mid + 1, 'student_id': sid, 
                         'start_time': sdt.strftime('%Y-%m-%dT%H:%M:%S'), 
@@ -205,10 +201,7 @@ with tab2:
                         'google_event_id': gid, 'progress': prog, 'invoice_id': 0
                     }])
                     st.session_state.df_sess = pd.concat([st.session_state.df_sess, new_lesson], ignore_index=True)
-                    
-                    save_to_cloud("sessions", st.session_state.df_sess)
-                    st.rerun()
-
+                    save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
 
         with st.expander("📅 大範圍區間排課"):
             with st.form("rf"):
@@ -263,7 +256,7 @@ with tab2:
             sn = name_map.get(name_to_id.get(str(r['student_id']).split('.')[0], str(r['student_id']).split('.')[0]), '未知')
             ico = "⚠️" if r.get('status')=="請假" else "❌" if r.get('status')=="已取消" else ""
             with st.expander(f"{r['dt'].strftime('%m/%d %H:%M')} │ 🧑‍🎓 {sn} {ico}"):
-                with st.form(f"tab2_form_edit_{r['id']}"):
+                with st.form(f"ef_{r['id']}"):
                     n_dt, n_st = st.date_input("日期", r['dt'].date()), st.time_input("時間", r['dt'].time())
                     n_dur = st.slider("時數", 0.5, 4.0, (r['edt']-r['dt']).total_seconds()/3600, 0.5, key=f"tab2_slider_dur_{r['id']}")
                     stt = st.selectbox("狀態", ["已預約","請假","已取消","已完成"], index=["已預約","請假","已取消","已完成"].index(r.get('status','已預約') if r.get('status') in ["已預約","請假","已取消","已完成"] else "已預約"), key=f"tab2_select_status_{r['id']}")
@@ -276,8 +269,6 @@ with tab2:
                             if stt in ["請假", "已取消"]: do_gcal("delete", eid=gid); st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], 'google_event_id']=""
                             else: do_gcal("update", f"家教: {sn}", ns, ne, gid)
                         save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
-                    
-                    # 🛡️ 修正點：原 Line 259 衝突處。加上 tab2_btn_del_ 前綴，完美隔離命名空間
                     if c_b2.form_submit_button("🗑️ 刪除"):
                         gid = r.get('google_event_id', "")
                         if gid and gid.lower() not in ["nan", "none", ""]: do_gcal("delete", eid=gid)
@@ -312,11 +303,11 @@ with tab3:
             sn = name_map.get(name_to_id.get(str(r['student_id']).split('.')[0], str(r['student_id']).split('.')[0]), '未知')
             with st.container(border=True):
                 st.markdown(f"### {sn} ({r.get('note', '')}) - 💰 ${int(r['total_amount']):,}")
-                c_inv1, c_inv2 = st.columns(2)
-                if c_inv2.button("💵 已收款", key=f"tab3_btn_pay_{r['id']}", type="primary"):
+                c1, c2 = st.columns(2)
+                if c2.button("💵 已收款", key=f"pay_{r['id']}", type="primary"):
                     st.session_state.df_inv.loc[st.session_state.df_inv['id']==r['id'], 'is_paid'] = 1
                     save_to_cloud("invoices", st.session_state.df_inv); st.rerun()
-                with c_inv1.expander("複製 Line 文案"):
+                with c1.expander("複製 Line 文案"):
                     mls = st.session_state.df_sess[pd.to_numeric(st.session_state.df_sess.get('invoice_id',0), errors='coerce').fillna(0) == int(r['id'])].copy()
                     if not mls.empty:
                         mls['dt'] = pd.to_datetime(mls['start_time'])
@@ -346,8 +337,7 @@ with tab4:
         weekdays_tw = ["一", "二", "三", "四", "五", "六", "日"]
         for _, r in st.session_state.df_stu.iterrows():
             sid, sn = str(int(r['id'])), r['name']
-
-            # 🔥 修正點：使用 df_tmp 拷貝版來運算，保護主資料庫欄位不被污染
+            
             df_ms = pd.DataFrame()
             if not st.session_state.df_sess.empty and 'student_id' in st.session_state.df_sess.columns:
                 df_tmp = st.session_state.df_sess.copy()
@@ -410,7 +400,4 @@ with tab4:
                             st.code("\n".join(line_msg), language=None)
                         else: st.write("沒有未來的預約課程")
                     else: st.write("尚無紀錄。")
-    else:
-        st.info("目前名冊空空如也，請先點擊上方新增學生喔！")
-
 # ===== 程式碼結束 =====
