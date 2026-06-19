@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
 
-st.set_page_config(page_title="家教排課系統 v2.6", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v2.7", page_icon="📅", layout="centered")
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
@@ -36,7 +36,7 @@ except:
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 2.6")
+    st.title("👋 歡迎使用排課系統 2.7")
     if "users" in st.secrets:
         user_dict = st.secrets["users"]
         selected_login = st.selectbox("請選擇您的身分", list(user_dict.keys()))
@@ -181,7 +181,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# TAB 1: 概況中心
+# TAB 1: 概況中心 (🔥 大改版：快速完課、秒殺停課、彈出調課)
 # ==========================================
 with tab1:
     st.subheader("📊 營收動態與行程追蹤")
@@ -196,8 +196,8 @@ with tab1:
             df_cal_check = df_cal_check.dropna(subset=['start_dt_safe'])
             
             target_date_str = cal_date.strftime('%Y-%m-%d')
-            # 過濾掉已經取消的課，達成「沒上課就消掉」的效果
-            df_today_lessons = df_cal_check[(df_cal_check['start_dt_safe'].dt.strftime('%Y-%m-%d') == target_date_str) & (df_cal_check['status'] != '已取消')]
+            # 這裡不預先排除狀態，讓當天所有的預約狀態一併秀出
+            df_today_lessons = df_cal_check[df_cal_check['start_dt_safe'].dt.strftime('%Y-%m-%d') == target_date_str]
             df_today_lessons = df_today_lessons.sort_values('start_dt_safe')
             
             st.markdown(f"**🔍 {cal_date.strftime('%m/%d')} 當日課表明細：**")
@@ -211,37 +211,71 @@ with tab1:
                     s_time = l_row['start_dt_safe'].strftime('%H:%M')
                     curr_status = l_row.get('status', '已預約')
                     
-                    # 🔥 升級亮點：互動式快捷打卡面板
+                    # 互動式快捷打卡與調課面板
                     with st.container(border=True):
-                        c_info, c_check, c_cancel = st.columns([5, 2, 2])
+                        c_info, c_check, c_cancel, c_resched = st.columns([3.5, 1.8, 1.8, 1.8])
                         with c_info:
-                            st.markdown(f"▶️ <span style='color:{l_color};'>●</span> **{s_time}** │ 🧑‍🎓 **{l_name}** {'(請假)' if curr_status == '請假' else ''}", unsafe_allow_html=True)
+                            st.markdown(f"▶️ <span style='color:{l_color};'>●</span> **{s_time}** │ 🧑‍🎓 **{l_name}**", unsafe_allow_html=True)
                             if l_row.get('progress', ""):
                                 st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;🏷 *備註：{l_row['progress']}")
                         
+                        # 1. ✅ 一鍵完課勾選
                         with c_check:
                             is_done = st.checkbox("✅ 完課", value=(curr_status == '已完成'), key=f"done_{l_row['id']}")
-                            # 如果勾選了，但狀態還不是已完成 -> 更新狀態為已完成
                             if is_done and curr_status != '已完成':
                                 st.session_state.df_sess.loc[st.session_state.df_sess['id']==l_row['id'], 'status'] = '已完成'
                                 save_to_cloud("sessions", st.session_state.df_sess)
                                 st.rerun()
-                            # 如果取消勾選，但狀態是已完成 -> 恢復成已預約
-                            elif not is_done and curr_status == '已完成':
+                            elif not is_done and curr_status == '宿舍' or curr_status == '已完成':
                                 st.session_state.df_sess.loc[st.session_state.df_sess['id']==l_row['id'], 'status'] = '已預約'
                                 save_to_cloud("sessions", st.session_state.df_sess)
                                 st.rerun()
                                 
+                        # 2. ❌ 直接停課就直接刪除！
                         with c_cancel:
-                            if st.button("❌ 停課", key=f"cancel_{l_row['id']}", help="點擊將取消此堂課，並從今日課表隱藏"):
-                                with st.spinner("隱藏中..."):
-                                    st.session_state.df_sess.loc[st.session_state.df_sess['id']==l_row['id'], 'status'] = '已取消'
+                            if st.button("❌ 停課", key=f"cancel_{l_row['id']}", help="直接刪除此堂課，並連動刪除 Google 日曆"):
+                                with st.spinner("正在刪除課程..."):
                                     gid = l_row.get('google_event_id', "")
                                     if gid:
                                         delete_google_event(gid)
-                                        st.session_state.df_sess.loc[st.session_state.df_sess['id']==l_row['id'], 'google_event_id'] = ""
+                                    # 直接從狀態中抹除該行，不留任何痕跡
+                                    st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id'] != l_row['id']]
                                     save_to_cloud("sessions", st.session_state.df_sess)
+                                    time.sleep(0.3)
                                 st.rerun()
+                                
+                        # 3. 📅 旁邊出現快速調課小視窗
+                        with c_resched:
+                            with st.popover("📅 調課"):
+                                with st.form(key=f"pop_re_{l_row['id']}"):
+                                    quick_date = st.date_input("選擇新日期", l_row['start_dt_safe'].date())
+                                    quick_time = st.time_input("選擇新時間", l_row['start_dt_safe'].time())
+                                    
+                                    # 計算原本時數
+                                    old_dur_hours = 1.5
+                                    try:
+                                        if 'end_time' in l_row and pd.notna(l_row['end_time']):
+                                            old_dur_hours = (pd.to_datetime(l_row['end_time']) - l_row['start_dt_safe']).total_seconds() / 3600
+                                    except:
+                                        pass
+                                        
+                                    if st.form_submit_button("💾 確定改期"):
+                                        with st.spinner("正在同步更改日曆與雲端..."):
+                                            new_start_dt = datetime.combine(quick_date, quick_time)
+                                            new_end_dt = new_start_dt + timedelta(hours=old_dur_hours)
+                                            
+                                            st.session_state.df_sess.loc[st.session_state.df_sess['id'] == l_row['id'], 'start_time'] = new_start_dt.strftime('%Y-%m-%dT%H:%M:%S')
+                                            st.session_state.df_sess.loc[st.session_state.df_sess['id'] == l_row['id'], 'end_time'] = new_end_dt.strftime('%Y-%m-%dT%H:%M:%S')
+                                            
+                                            # 連動修改 Google 日曆
+                                            gid = l_row.get('google_event_id', "")
+                                            if gid:
+                                                update_google_event(gid, f"家教: {l_name}", new_start_dt, new_end_dt)
+                                                
+                                            save_to_cloud("sessions", st.session_state.df_sess)
+                                        st.toast("📅 快速調課完成！")
+                                        time.sleep(0.4)
+                                        st.rerun()
             else:
                 st.write("🏝️ 這天目前沒有排課，好好休息一下吧！")
         else:
@@ -365,41 +399,4 @@ with tab2:
                         
                         current_date = r_start_date
                         new_lessons_bulk = []
-                        max_id_bulk = int(st.session_state.df_sess['id'].max()) if not st.session_state.df_sess.empty and 'id' in st.session_state.df_sess.columns else 0
-                        
-                        with st.spinner("正在為您精算區間日期並建立課表中..."):
-                            while current_date <= r_end_date:
-                                if current_date.weekday() in target_wday_nums:
-                                    s_dt = datetime.combine(current_date, r_time)
-                                    e_dt = s_dt + timedelta(hours=r_dur)
-                                    
-                                    g_id = ""
-                                    if r_sync_gcal:
-                                        g_id = create_google_event(f"家教: {student_name_map[r_stu_id]}", s_dt, e_dt)
-                                        time.sleep(0.15) 
-                                    
-                                    max_id_bulk += 1
-                                    new_lessons_bulk.append({
-                                        'id': max_id_bulk, 'student_id': r_stu_id,
-                                        'start_time': s_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                                        'end_time': e_dt.strftime('%Y-%m-%dT%H:%M:%S'),
-                                        'status': '已預約', 'actual_rate': target_rate,
-                                        'google_event_id': g_id, 'progress': r_note, 'invoice_id': 0
-                                    })
-                                current_date += timedelta(days=1)
-                        
-                        if new_lessons_bulk:
-                            st.session_state.df_sess = pd.concat([st.session_state.df_sess, pd.DataFrame(new_lessons_bulk)], ignore_index=True)
-                            save_to_cloud("sessions", st.session_state.df_sess)
-                            st.success(f"🎉 成功！已自動在區間內建立 {len(new_lessons_bulk)} 堂課程。")
-                            time.sleep(1)
-                            st.rerun()
-
-        # --- 批量刪除 ---
-        with st.expander("🧹 批量秒殺【多堂】課程 (清理錯誤排課)"):
-            st.markdown("請在下方勾選你想一次刪除的課程：")
-            if not st.session_state.df_sess.empty:
-                df_del = st.session_state.df_sess.copy()
-                df_del['dt_order'] = pd.to_datetime(df_del['start_time'], errors='coerce')
-                df_del = df_del.dropna(subset=['dt_order']).sort_values('dt_order', ascending=False)
-             
+                        max_id_bulk = int(st.session_state.df_sess['id'].max()) if not st.session_sta
