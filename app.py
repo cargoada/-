@@ -85,6 +85,7 @@ def do_gcal(action, title="", s_dt=None, e_dt=None, eid=""):
 # ==========================================
 if 'initialized' not in st.session_state:
     st.session_state.initialized = False
+    st.session_state.draft_list = [] # 🛒 新增：用來裝預排課程的推車
     for k in ['df_stu', 'df_sess', 'df_inv', 'df_stats']: st.session_state[k] = pd.DataFrame()
 
 if not st.session_state.initialized:
@@ -94,6 +95,7 @@ if not st.session_state.initialized:
         st.session_state.df_inv = get_cloud_data("invoices")
         st.session_state.df_stats = get_cloud_data("stats")
         st.session_state.initialized = True
+
 
 name_map, rate_map, color_map, name_to_id = {}, {}, {}, {}
 if not st.session_state.df_stu.empty:
@@ -182,26 +184,61 @@ with tab1:
 with tab2:
     if st.session_state.df_stu.empty: st.warning("請先建立學生檔案！")
     else:
-        with st.expander("➕ 單堂課程"):
-            with st.form("sf"):
+        # --- 🔥 全新升級：預排單堂課程購物車 ---
+        with st.expander("🛒 預排單堂課程 (先點好，再一鍵送出)", expanded=True):
+            with st.form("draft_form", clear_on_submit=True):
                 c1, c2, c3, c4 = st.columns(4)
-                sid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x], key="tab2_single_stu_select")
+                sid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x], key="tab2_draft_stu")
                 dt, tm, dur = c2.date_input("日期"), c3.time_input("時間", datetime.now().replace(minute=0,second=0)), c4.slider("時數", 0.5, 4.0, 1.5, 0.5)
-                sy, prog = st.checkbox("同步 Google 日曆", key="tab2_single_sync_gcal"), st.text_input("備註")
-                if st.form_submit_button("確認建立", type="primary"):
+                sy, prog = st.checkbox("同步 Google 日曆", value=False), st.text_input("備註")
+                
+                if st.form_submit_button("➕ 加入預排清單"):
                     sdt, edt = datetime.combine(dt, tm), datetime.combine(dt, tm) + timedelta(hours=dur)
-                    gid = do_gcal("insert", f"家教: {name_map[sid]}", sdt, edt) if sy else ""
-                    mid = int(st.session_state.df_sess['id'].max()) if not st.session_state.df_sess.empty else 0
-                    
-                    new_lesson = pd.DataFrame([{
-                        'id': mid + 1, 'student_id': sid, 
-                        'start_time': sdt.strftime('%Y-%m-%dT%H:%M:%S'), 
-                        'end_time': edt.strftime('%Y-%m-%dT%H:%M:%S'), 
-                        'status': '已預約', 'actual_rate': rate_map.get(sid, 500), 
-                        'google_event_id': gid, 'progress': prog, 'invoice_id': 0
-                    }])
-                    st.session_state.df_sess = pd.concat([st.session_state.df_sess, new_lesson], ignore_index=True)
-                    save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
+                    st.session_state.draft_list.append({
+                        'sid': sid, 'sname': name_map[sid], 'sdt': sdt, 'edt': edt,
+                        'sy': sy, 'prog': prog, 'rate': rate_map.get(sid, 500)
+                    })
+                    st.rerun()
+            
+            # --- 顯示購物車內容與送出按鈕 ---
+            if st.session_state.draft_list:
+                st.markdown("#### 📝 目前待送出的課表")
+                for i, draft in enumerate(st.session_state.draft_list):
+                    col_info, col_btn = st.columns([5, 1])
+                    sync_icon = "🔄" if draft['sy'] else ""
+                    col_info.info(f"{draft['sdt'].strftime('%m/%d %H:%M')} │ 🧑‍🎓 **{draft['sname']}** ({dur}h) {sync_icon} {draft['prog']}")
+                    if col_btn.button("❌", key=f"rm_draft_{i}", help="移除此筆預排"):
+                        st.session_state.draft_list.pop(i)
+                        st.rerun()
+                
+                if st.button("🚀 確認送出以上所有排課", type="primary", use_container_width=True):
+                    with st.spinner(f"正在將 {len(st.session_state.draft_list)} 堂課寫入雲端與日曆，請稍候..."):
+                        if not st.session_state.df_sess.empty and 'id' in st.session_state.df_sess.columns:
+                            mid = int(st.session_state.df_sess['id'].max())
+                        else:
+                            mid = 0
+                            
+                        new_lessons = []
+                        for draft in st.session_state.draft_list:
+                            gid = do_gcal("insert", f"家教: {draft['sname']}", draft['sdt'], draft['edt']) if draft['sy'] else ""
+                            mid += 1
+                            new_lessons.append({
+                                'id': mid, 'student_id': draft['sid'],
+                                'start_time': draft['sdt'].strftime('%Y-%m-%dT%H:%M:%S'),
+                                'end_time': draft['edt'].strftime('%Y-%m-%dT%H:%M:%S'),
+                                'status': '已預約', 'actual_rate': draft['rate'],
+                                'google_event_id': gid, 'progress': draft['prog'], 'invoice_id': 0
+                            })
+                            if draft['sy']: time.sleep(0.2) # 保護 Google API
+                        
+                        if new_lessons:
+                            st.session_state.df_sess = pd.concat([st.session_state.df_sess, pd.DataFrame(new_lessons)], ignore_index=True)
+                            save_to_cloud("sessions", st.session_state.df_sess)
+                            st.session_state.draft_list = [] # 清空推車
+                            st.toast("🎉 全部排課成功寫入！")
+                            time.sleep(0.5)
+                            st.rerun()
+
 
         with st.expander("📅 大範圍區間排課"):
             with st.form("rf"):
