@@ -374,7 +374,7 @@ with tab4:
                     with st.spinner("正在建立學生檔案..."):
                         mid = int(st.session_state.df_stu['id'].max()) if not st.session_state.df_stu.empty and 'id' in st.session_state.df_stu.columns else 0
                         
-                        # 🔥 升級防彈寫法：用 DataFrame 合併，無視任何隱形空白欄位！
+                        # 🛡️ 安全合併寫法，無視多餘空白欄位
                         new_stu_row = pd.DataFrame([{
                             'id': mid + 1, 
                             'name': n.strip(), 
@@ -382,16 +382,81 @@ with tab4:
                             'color': col.split(" ")[0]
                         }])
                         
-                        updated_df_stu = pd.concat([st.session_state.df_stu, new_stu_row], ignore_index=True)
+                        st.session_state.df_stu = pd.concat([st.session_state.df_stu, new_stu_row], ignore_index=True)
+                        save_to_cloud("students", st.session_state.df_stu)
                         
-                        # 🛡️ 加上安全閘門，確保寫入雲端成功才重新整理
-                        if save_to_cloud("students", updated_df_stu):
-                            st.session_state.df_stu = updated_df_stu
-                            st.toast(f"🎓 已成功建立 {n} 的檔案！")
-                            time.sleep(0.5)
-                            st.rerun()
+                        st.toast(f"🎓 已成功建立 {n.strip()} 的檔案！")
+                        time.sleep(0.5)
+                        st.rerun()
 
-                            for _, f_c in f_ls.iterrows(): msg.append(f"📌 {f_c['dt_f'].strftime('%m/%d')} ({weekdays_tw[f_c['dt_f'].weekday()]}) {f_c['dt_f'].strftime('%H:%M')}")
-                            msg.append("\n再請您核對時間，謝謝老師！")
-                            st.code("\n".join(msg), language=None)
-# ===== 程式碼結束 =====                    
+    st.divider()
+    if not st.session_state.df_stu.empty:
+        weekdays_tw = ["一", "二", "三", "四", "五", "六", "日"]
+        for _, r in st.session_state.df_stu.iterrows():
+            sid, sn = str(int(r['id'])), r['name']
+            
+            df_ms = pd.DataFrame()
+            if not st.session_state.df_sess.empty and 'student_id' in st.session_state.df_sess.columns:
+                df_tmp = st.session_state.df_sess.copy()
+                df_tmp['resolved_sid'] = df_tmp['student_id'].astype(str).str.strip().str.split('.').str[0].map(lambda x: name_to_id.get(x, x))
+                df_ms = df_tmp[df_tmp['resolved_sid'] == sid].copy()
+
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([0.5, 4, 1.5])
+                c1.markdown(f"<div style='width:25px;height:25px;background-color:{r.get('color','#3498DB')};border-radius:50%;'></div>", unsafe_allow_html=True)
+                c2.markdown(f"### {sn} (${r.get('default_rate',500)}/hr)")
+                if c3.button("🗑️ 移除", key=f"t4_ds_{sid}"):
+                    st.session_state.df_stu = st.session_state.df_stu[st.session_state.df_stu['id']!=r['id']]
+                    save_to_cloud("students", st.session_state.df_stu); st.rerun()
+
+                with st.expander("🪄 智慧續排"):
+                    if not df_ms.empty:
+                        df_ms['dt'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
+                        last_class = df_ms['dt'].max()
+                        wp = df_ms[df_ms['dt'] >= last_class - timedelta(days=6)]
+                        for _, w in wp.iterrows(): st.write(f"📅 星期{weekdays_tw[w['dt'].weekday()]} {w['dt'].strftime('%H:%M')}")
+                        wk = st.number_input("展延週數", 1, 8, 4, key=f"t4_w_{sid}")
+                        sy = st.checkbox("同步日曆", key=f"t4_sg_{sid}")
+                        if st.button("🚀 產生", key=f"t4_rn_{sid}"):
+                            mid = int(st.session_state.df_sess['id'].max()) if not st.session_state.df_sess.empty else 0
+                            l = []
+                            for i in range(1, int(wk)+1):
+                                for _, p in wp.iterrows():
+                                    ns = pd.to_datetime(p['start_time']) + timedelta(weeks=i)
+                                    ne = (pd.to_datetime(p['end_time']) if pd.notna(p['end_time']) else ns+timedelta(hours=1.5)) + timedelta(weeks=i)
+                                    gid = do_gcal("insert", f"家教: {sn}", ns, ne) if sy else ""
+                                    mid += 1
+                                    l.append({'id':mid, 'student_id':sid, 'start_time':ns.strftime('%Y-%m-%dT%H:%M:%S'), 'end_time':ne.strftime('%Y-%m-%dT%H:%M:%S'), 'status':'已預約', 'actual_rate':r.get('default_rate',500), 'google_event_id':gid, 'progress':'', 'invoice_id':0})
+                            if l:
+                                st.session_state.df_sess = pd.concat([st.session_state.df_sess, pd.DataFrame(l)], ignore_index=True)
+                                save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
+                    else: st.info("目前無歷史排課可供系統學習。")
+
+                with st.expander("📝 歷史上課進度查看"):
+                    if not df_ms.empty:
+                        df_ms['dt_safe_p'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
+                        past_ls = df_ms[(df_ms['dt_safe_p'] < datetime.now()) & (df_ms['status'] != '已取消')].sort_values('dt_safe_p', ascending=False)
+                        if not past_ls.empty:
+                            for _, p_cls in past_ls.iterrows():
+                                st.markdown(f"**📅 {p_cls['start_time'].replace('T', ' ')}** {'(請假)' if p_cls.get('status') == '請假' else ''}")
+                                st.write(p_cls['progress'] if p_cls['progress'] else "（無紀錄）")
+                                st.divider()
+                        else: st.write("尚無歷史授課紀錄。")
+                    else: st.write("尚無紀錄。")
+
+                with st.expander("💬 產生 Line 課表通知文案"):
+                    if not df_ms.empty:
+                        df_ms['dt_safe_f'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
+                        fut_ls = df_ms[(df_ms['dt_safe_f'] >= datetime.now()) & (df_ms['status'] == '已預約')].sort_values('dt_safe_f')
+                        if not fut_ls.empty:
+                            line_msg = [f"【{sn} 近期課程預告】\n家長您好，以下是接下來的排課時間：\n"]
+                            for _, f_cls in fut_ls.iterrows():
+                                f_dt = f_cls['dt_safe_f']
+                                line_msg.append(f"📌 {f_dt.strftime('%m/%d')} ({weekdays_tw[f_dt.weekday()]}) {f_dt.strftime('%H:%M')}")
+                            line_msg.append("\n再請您核對時間，謝謝老師！")
+                            st.code("\n".join(line_msg), language=None)
+                        else: st.write("沒有未來的預約課程")
+                    else: st.write("尚無紀錄。")
+    else:
+        st.info("目前名冊空空如也，請先點擊上方新增學生喔！")
+# ===== 程式碼結束 =====
