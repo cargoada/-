@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 # 1. 系統核心設定
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
-st.set_page_config(page_title="家教排課系統 v3.0", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v3.0.2", page_icon="📅", layout="centered")
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/calendar']
 
 service = None
@@ -26,7 +26,7 @@ except: pass
 # ==========================================
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 v3.0")
+    st.title("👋 歡迎使用排課系統 v3.0.2")
     if "users" in st.secrets:
         selected_login = st.selectbox("請選擇您的身分", list(st.secrets["users"].keys()))
         if st.button("🚀 進入系統", type="primary", use_container_width=True):
@@ -62,7 +62,10 @@ def save_to_cloud(ws_name, df):
     try:
         conn.update(spreadsheet=CURRENT_SHEET_URL, worksheet=ws_name, data=df.astype(object).fillna(""))
         st.cache_data.clear() 
-    except Exception as e: st.error(f"雲端寫入失敗: {e}")
+        return True
+    except Exception as e: 
+        st.error(f"❌ 雲端寫入失敗，請檢查網路或權限: {e}")
+        return False
 
 def do_gcal(action, title="", s_dt=None, e_dt=None, eid=""):
     if service is None: return "" if action=="insert" else False
@@ -105,7 +108,7 @@ if not st.session_state.df_stu.empty:
         try: rate_map[sid] = int(r.get('default_rate', 500))
         except: rate_map[sid] = 500
 
-# 🛡️ 智慧衝突偵測函數 (核心外掛)
+# 🛡️ 智慧衝突偵測雷達
 def get_conflicts(new_s, new_e, exclude_id=None):
     c_list = []
     if not st.session_state.df_sess.empty:
@@ -115,13 +118,11 @@ def get_conflicts(new_s, new_e, exclude_id=None):
         df = df[~df['status'].isin(['請假', '已取消'])].dropna(subset=['s'])
         if exclude_id: df = df[df['id'] != exclude_id]
         
-        # 只要「新開始 < 舊結束」且「新結束 > 舊開始」，就是時間重疊！
         mask = (df['s'] < new_e) & (df['e'] > new_s)
         for _, r in df[mask].iterrows():
             rsn = name_map.get(name_to_id.get(str(r['student_id']).split('.')[0], str(r['student_id']).split('.')[0]), '未知')
             c_list.append(f"{rsn}({r['s'].strftime('%m/%d %H:%M')})")
             
-    # 同時檢查預排購物車內的課程
     for d in st.session_state.draft_list:
         if d['sdt'] < new_e and d['edt'] > new_s:
             c_list.append(f"預排的 {d['sname']}({d['sdt'].strftime('%m/%d %H:%M')})")
@@ -160,26 +161,27 @@ with tab1:
                         
                         if c2.checkbox("✅ 完課", value=(c_stt == '已完成'), key=f"t1_ck_{r['id']}") != (c_stt == '已完成'):
                             st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], 'status'] = '已完成' if c_stt != '已完成' else '已預約'
-                            save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
+                            if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
+                            
                         if c3.button("❌ 停課", key=f"t1_cl_{r['id']}"):
                             do_gcal("delete", eid=r.get('google_event_id', ""))
                             st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id'] != r['id']]
-                            save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
+                            if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
+                            
                         with c4.popover("📅 調課"):
                             with st.form(f"t1_fm_{r['id']}"):
                                 nd, nt = st.date_input("日期", r['sdt'].date()), st.time_input("時間", r['sdt'].time())
                                 old_h = 1.5 if pd.isna(r.get('end_time')) else (pd.to_datetime(r['end_time']) - r['sdt']).total_seconds()/3600
                                 if st.form_submit_button("💾 確定"):
                                     ns, ne = datetime.combine(nd, nt), datetime.combine(nd, nt) + timedelta(hours=old_h)
-                                    # 🛡️ 調課也有衝突防護
                                     cf = get_conflicts(ns, ne, exclude_id=r['id'])
                                     if cf: st.toast(f"⚠️ 調課提醒：與 {', '.join(cf)} 衝突！", icon="⚠️")
                                     st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], ['start_time','end_time']] = [ns.strftime('%Y-%m-%dT%H:%M:%S'), ne.strftime('%Y-%m-%dT%H:%M:%S')]
                                     if r.get('google_event_id'): do_gcal("update", f"家教: {sname}", ns, ne, r['google_event_id'])
-                                    save_to_cloud("sessions", st.session_state.df_sess); time.sleep(0.4); st.rerun()
+                                    if save_to_cloud("sessions", st.session_state.df_sess):
+                                        time.sleep(0.4); st.rerun()
             else: st.write("🏝️ 沒排課，好好休息！")
 
-    # 營收
     if not st.session_state.df_sess.empty:
         dc = st.session_state.df_sess.copy()
         dc['sdt'] = pd.to_datetime(dc['start_time'], errors='coerce')
@@ -195,7 +197,6 @@ with tab1:
         c1.metric("本月預估", f"${int(tm):,}"); c2.metric("未結算", f"${int(pdn):,}"); c3.metric("總收入", f"${int(hst):,}")
         dc['m'] = dc['sdt'].dt.strftime('%Y-%m')
         st.bar_chart(dc.groupby('m')['amt'].sum(), color="#3498DB")
-
 # ==========================================
 # TAB 2: 課表排程
 # ==========================================
@@ -210,7 +211,7 @@ with tab2:
                 sy, prog = st.checkbox("同步 Google 日曆", key="t2_sy"), st.text_input("備註")
                 if st.form_submit_button("➕ 加入預排", type="primary"):
                     ns, ne = datetime.combine(dt, tm), datetime.combine(dt, tm) + timedelta(hours=dur)
-                    cf = get_conflicts(ns, ne) # 🛡️ 衝突偵測
+                    cf = get_conflicts(ns, ne) 
                     if cf: st.toast(f"⚠️ 注意！已加入預排，但與 {', '.join(cf)} 衝突！", icon="⚠️")
                     st.session_state.draft_list.append({'sid': sid, 'sname': name_map[sid], 'sdt': ns, 'edt': ne, 'sy': sy, 'prog': prog, 'rate': rate_map.get(sid, 500), 'cf': cf})
                     st.rerun()
@@ -246,15 +247,13 @@ with tab2:
                 for i, d in enumerate(st.session_state.draft_list):
                     c_inf, c_b = st.columns([5, 1])
                     ss = "🔄" if d['sy'] else ""
-                    # 🛡️ 在購物車顯示黃色衝突警報
                     if d.get('cf'): c_inf.warning(f"{d['sdt'].strftime('%m/%d %H:%M')} │ 🧑‍🎓 **{d['sname']}** {ss} {d['prog']} ⚠️ 與 {', '.join(d['cf'])} 衝突！")
                     else: c_inf.info(f"{d['sdt'].strftime('%m/%d %H:%M')} │ 🧑‍🎓 **{d['sname']}** {ss} {d['prog']}")
-                    
                     if c_b.button("❌", key=f"t2_rm_df_{i}", help="移除"):
                         st.session_state.draft_list.pop(i); st.rerun()
                 
                 if st.button("🚀 確認送出以上所有排課", type="primary", use_container_width=True):
-                    with st.spinner("寫入中..."):
+                    with st.spinner("安全寫入雲端中..."):
                         mid = int(st.session_state.df_sess['id'].max()) if not st.session_state.df_sess.empty and 'id' in st.session_state.df_sess.columns else 0
                         n_ls = []
                         for d in st.session_state.draft_list:
@@ -263,25 +262,38 @@ with tab2:
                             n_ls.append({'id': mid, 'student_id': d['sid'], 'start_time': d['sdt'].strftime('%Y-%m-%dT%H:%M:%S'), 'end_time': d['edt'].strftime('%Y-%m-%dT%H:%M:%S'), 'status': '已預約', 'actual_rate': d['rate'], 'google_event_id': gid, 'progress': d['prog'], 'invoice_id': 0})
                             if d['sy']: time.sleep(0.15)
                         if n_ls:
-                            st.session_state.df_sess = pd.concat([st.session_state.df_sess, pd.DataFrame(n_ls)], ignore_index=True)
-                            save_to_cloud("sessions", st.session_state.df_sess)
-                            st.session_state.draft_list = []; st.toast("🎉 排課完成！"); time.sleep(0.5); st.rerun()
+                            updated_df = pd.concat([st.session_state.df_sess, pd.DataFrame(n_ls)], ignore_index=True)
+                            if save_to_cloud("sessions", updated_df):
+                                st.session_state.df_sess = updated_df
+                                st.session_state.draft_list = [] 
+                                st.toast("🎉 排課完成！"); time.sleep(0.5); st.rerun()
 
+        # 🔥 修正點：批量刪課自動過濾「已結束課程」
         with st.expander("🧹 批量刪課 (清理錯誤排課)"):
             if not st.session_state.df_sess.empty:
                 df_dl = st.session_state.df_sess.copy()
                 df_dl['dt'] = pd.to_datetime(df_dl['start_time'], errors='coerce')
-                df_dl = df_dl.dropna(subset=['dt']).sort_values('dt', ascending=False)
-                ops = {f"{r['dt'].strftime('%Y-%m-%d %H:%M')} | {name_map.get(name_to_id.get(str(r['student_id']).split('.')[0], str(r['student_id']).split('.')[0]), '未知')} (ID:{r['id']})": r['id'] for _, r in df_dl.iterrows()}
-                sl = st.multiselect("選取刪除", list(ops.keys()), key="t2_mdel")
-                if st.button("🚨 批量刪除", type="primary", key="t2_bmdel") and sl:
-                    ids = [ops[k] for k in sl]
-                    with st.spinner("清除中..."):
-                        for i in ids:
-                            gid = str(st.session_state.df_sess[st.session_state.df_sess['id']==i]['google_event_id'].iloc[0])
-                            if gid and gid.lower() not in ["nan", "none", ""]: do_gcal("delete", eid=gid)
-                        st.session_state.df_sess = st.session_state.df_sess[~st.session_state.df_sess['id'].isin(ids)]
-                        save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
+                df_dl['edt'] = pd.to_datetime(df_dl['end_time'], errors='coerce').fillna(df_dl['dt'] + timedelta(hours=1.5))
+                df_dl = df_dl.dropna(subset=['dt'])
+                
+                # 關鍵防護：只撈出「結束時間 > 現在」的未來課程，並且順向排序
+                df_dl = df_dl[df_dl['edt'] > datetime.now()].sort_values('dt', ascending=True)
+                
+                if not df_dl.empty:
+                    ops = {f"{r['dt'].strftime('%Y-%m-%d %H:%M')} | {name_map.get(name_to_id.get(str(r['student_id']).split('.')[0], str(r['student_id']).split('.')[0]), '未知')} (ID:{r['id']})": r['id'] for _, r in df_dl.iterrows()}
+                    sl = st.multiselect("選取要刪除的未來課程", list(ops.keys()), key="t2_mdel")
+                    if st.button("🚨 批量刪除", type="primary", key="t2_bmdel") and sl:
+                        ids = [ops[k] for k in sl]
+                        with st.spinner("清除中..."):
+                            for i in ids:
+                                gid = str(st.session_state.df_sess[st.session_state.df_sess['id']==i]['google_event_id'].iloc[0])
+                                if gid and gid.lower() not in ["nan", "none", ""]: do_gcal("delete", eid=gid)
+                            updated_df_del = st.session_state.df_sess[~st.session_state.df_sess['id'].isin(ids)]
+                            if save_to_cloud("sessions", updated_df_del):
+                                st.session_state.df_sess = updated_df_del
+                                st.rerun()
+                else:
+                    st.info("🎯 目前沒有未來的預約課程需要清理。")
 
     st.divider(); st.subheader("📋 未來課表調課中心")
     if not st.session_state.df_sess.empty:
@@ -300,7 +312,6 @@ with tab2:
                     cb1, cb2 = st.columns([3, 1])
                     if cb1.form_submit_button("💾 更新", type="primary"):
                         ns, ne = datetime.combine(n_dt, n_st), datetime.combine(n_dt, n_st) + timedelta(hours=n_dur)
-                        # 🛡️ 調課也有衝突防護
                         cf = get_conflicts(ns, ne, exclude_id=r['id'])
                         if cf: st.toast(f"⚠️ 調課注意：與 {', '.join(cf)} 衝突！", icon="⚠️")
                         st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], ['start_time','end_time','status']] = [ns.strftime('%Y-%m-%dT%H:%M:%S'), ne.strftime('%Y-%m-%dT%H:%M:%S'), stt]
@@ -308,12 +319,12 @@ with tab2:
                         if gid and gid.lower() not in ["nan", "none", ""]:
                             if stt in ["請假", "已取消"]: do_gcal("delete", eid=gid); st.session_state.df_sess.loc[st.session_state.df_sess['id']==r['id'], 'google_event_id']=""
                             else: do_gcal("update", f"家教: {sn}", ns, ne, gid)
-                        save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
+                        if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
                     if cb2.form_submit_button("🗑️ 刪除"):
                         gid = r.get('google_event_id', "")
                         if gid and gid.lower() not in ["nan", "none", ""]: do_gcal("delete", eid=gid)
                         st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id']!=r['id']]
-                        save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
+                        if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
 
 # ==========================================
 # TAB 3: 帳單中心
@@ -332,7 +343,8 @@ with tab3:
                 for (sid, mk), grp in df_p.groupby(['student_id', 'mk']):
                     mid += 1
                     amt = sum([((pd.to_datetime(r['end_time'] if pd.notna(r.get('end_time')) else r['dt']+timedelta(hours=1.5))-r['dt']).total_seconds()/3600)*int(r.get('actual_rate',500)) for _, r in grp.iterrows() if pd.notna(r['dt'])])
-                    st.session_state.df_inv.loc[len(st.session_state.df_inv)] = [mid, str(sid).split('.')[0], int(amt), datetime.now().isoformat(), 0, mk]
+                    nr = pd.DataFrame([{'id': mid, 'student_id': str(sid).split('.')[0], 'total_amount': int(amt), 'created_at': datetime.now().isoformat(), 'is_paid': 0, 'note': mk}])
+                    st.session_state.df_inv = pd.concat([st.session_state.df_inv, nr], ignore_index=True)
                     st.session_state.df_sess.loc[grp.index, 'invoice_id'] = mid
                 save_to_cloud("invoices", st.session_state.df_inv); save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
                 
@@ -346,7 +358,7 @@ with tab3:
                 c1, c2 = st.columns(2)
                 if c2.button("💵 已收款", key=f"pay_{r['id']}", type="primary"):
                     st.session_state.df_inv.loc[st.session_state.df_inv['id']==r['id'], 'is_paid'] = 1
-                    save_to_cloud("invoices", st.session_state.df_inv); st.rerun()
+                    if save_to_cloud("invoices", st.session_state.df_inv): st.rerun()
                 with c1.expander("複製 Line 文案"):
                     mls = st.session_state.df_sess[pd.to_numeric(st.session_state.df_sess.get('invoice_id',0), errors='coerce').fillna(0) == int(r['id'])].copy()
                     if not mls.empty:
@@ -366,54 +378,38 @@ with tab4:
             c1, c2 = st.columns(2)
             n, rt = c1.text_input("姓名"), c2.number_input("時薪", value=700)
             col = st.selectbox("顏色", ["#FF5733", "#3498DB", "#2ECC71", "#F1C40F", "#9B59B6"])
-            
             if st.form_submit_button("儲存", type="primary"):
-                if n.strip() == "":
-                    st.error("❌ 請輸入學生姓名！")
+                if n.strip() == "": st.error("❌ 請輸入學生姓名！")
                 else:
-                    with st.spinner("正在建立學生檔案..."):
-                        mid = int(st.session_state.df_stu['id'].max()) if not st.session_state.df_stu.empty and 'id' in st.session_state.df_stu.columns else 0
-                        
-                        # 🛡️ 安全合併寫法，無視多餘空白欄位
-                        new_stu_row = pd.DataFrame([{
-                            'id': mid + 1, 
-                            'name': n.strip(), 
-                            'default_rate': rt, 
-                            'color': col.split(" ")[0]
-                        }])
-                        
-                        st.session_state.df_stu = pd.concat([st.session_state.df_stu, new_stu_row], ignore_index=True)
-                        save_to_cloud("students", st.session_state.df_stu)
-                        
-                        st.toast(f"🎓 已成功建立 {n.strip()} 的檔案！")
-                        time.sleep(0.5)
-                        st.rerun()
+                    mid = int(st.session_state.df_stu['id'].max()) if not st.session_state.df_stu.empty and 'id' in st.session_state.df_stu.columns else 0
+                    nr = pd.DataFrame([{'id': mid+1, 'name': n.strip(), 'default_rate': rt, 'color': col.split(" ")[0]}])
+                    ud = pd.concat([st.session_state.df_stu, nr], ignore_index=True)
+                    if save_to_cloud("students", ud):
+                        st.session_state.df_stu = ud; st.toast(f"🎓 已建立 {n.strip()}"); time.sleep(0.5); st.rerun()
 
     st.divider()
     if not st.session_state.df_stu.empty:
         weekdays_tw = ["一", "二", "三", "四", "五", "六", "日"]
         for _, r in st.session_state.df_stu.iterrows():
             sid, sn = str(int(r['id'])), r['name']
-            
             df_ms = pd.DataFrame()
             if not st.session_state.df_sess.empty and 'student_id' in st.session_state.df_sess.columns:
-                df_tmp = st.session_state.df_sess.copy()
-                df_tmp['resolved_sid'] = df_tmp['student_id'].astype(str).str.strip().str.split('.').str[0].map(lambda x: name_to_id.get(x, x))
-                df_ms = df_tmp[df_tmp['resolved_sid'] == sid].copy()
+                dtmp = st.session_state.df_sess.copy()
+                dtmp['rsid'] = dtmp['student_id'].astype(str).str.strip().str.split('.').str[0].map(lambda x: name_to_id.get(x, x))
+                df_ms = dtmp[dtmp['rsid'] == sid].copy()
 
             with st.container(border=True):
                 c1, c2, c3 = st.columns([0.5, 4, 1.5])
                 c1.markdown(f"<div style='width:25px;height:25px;background-color:{r.get('color','#3498DB')};border-radius:50%;'></div>", unsafe_allow_html=True)
                 c2.markdown(f"### {sn} (${r.get('default_rate',500)}/hr)")
                 if c3.button("🗑️ 移除", key=f"t4_ds_{sid}"):
-                    st.session_state.df_stu = st.session_state.df_stu[st.session_state.df_stu['id']!=r['id']]
-                    save_to_cloud("students", st.session_state.df_stu); st.rerun()
+                    ud = st.session_state.df_stu[st.session_state.df_stu['id']!=r['id']]
+                    if save_to_cloud("students", ud): st.session_state.df_stu = ud; st.rerun()
 
                 with st.expander("🪄 智慧續排"):
                     if not df_ms.empty:
                         df_ms['dt'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
-                        last_class = df_ms['dt'].max()
-                        wp = df_ms[df_ms['dt'] >= last_class - timedelta(days=6)]
+                        wp = df_ms[df_ms['dt'] >= df_ms['dt'].max() - timedelta(days=6)]
                         for _, w in wp.iterrows(): st.write(f"📅 星期{weekdays_tw[w['dt'].weekday()]} {w['dt'].strftime('%H:%M')}")
                         wk = st.number_input("展延週數", 1, 8, 4, key=f"t4_w_{sid}")
                         sy = st.checkbox("同步日曆", key=f"t4_sg_{sid}")
@@ -428,35 +424,28 @@ with tab4:
                                     mid += 1
                                     l.append({'id':mid, 'student_id':sid, 'start_time':ns.strftime('%Y-%m-%dT%H:%M:%S'), 'end_time':ne.strftime('%Y-%m-%dT%H:%M:%S'), 'status':'已預約', 'actual_rate':r.get('default_rate',500), 'google_event_id':gid, 'progress':'', 'invoice_id':0})
                             if l:
-                                st.session_state.df_sess = pd.concat([st.session_state.df_sess, pd.DataFrame(l)], ignore_index=True)
-                                save_to_cloud("sessions", st.session_state.df_sess); st.rerun()
-                    else: st.info("目前無歷史排課可供系統學習。")
+                                ud_sess = pd.concat([st.session_state.df_sess, pd.DataFrame(l)], ignore_index=True)
+                                if save_to_cloud("sessions", ud_sess):
+                                    st.session_state.df_sess = ud_sess; st.rerun()
+                    else: st.info("目前無排課紀錄可供參考。")
 
                 with st.expander("📝 歷史上課進度查看"):
                     if not df_ms.empty:
-                        df_ms['dt_safe_p'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
-                        past_ls = df_ms[(df_ms['dt_safe_p'] < datetime.now()) & (df_ms['status'] != '已取消')].sort_values('dt_safe_p', ascending=False)
-                        if not past_ls.empty:
-                            for _, p_cls in past_ls.iterrows():
-                                st.markdown(f"**📅 {p_cls['start_time'].replace('T', ' ')}** {'(請假)' if p_cls.get('status') == '請假' else ''}")
-                                st.write(p_cls['progress'] if p_cls['progress'] else "（無紀錄）")
-                                st.divider()
-                        else: st.write("尚無歷史授課紀錄。")
-                    else: st.write("尚無紀錄。")
+                        df_ms['dt_p'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
+                        p_ls = df_ms[(df_ms['dt_p'] < datetime.now()) & (df_ms['status'] != '已取消')].sort_values('dt_p', ascending=False)
+                        if not p_ls.empty:
+                            for _, p_c in p_ls.iterrows():
+                                st.markdown(f"**📅 {p_c['start_time'].replace('T', ' ')}** {'(請假)' if p_c.get('status') == '請假' else ''}")
+                                st.write(p_c['progress'] if p_c['progress'] else "（無紀錄）"); st.divider()
 
                 with st.expander("💬 產生 Line 課表通知文案"):
                     if not df_ms.empty:
-                        df_ms['dt_safe_f'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
-                        fut_ls = df_ms[(df_ms['dt_safe_f'] >= datetime.now()) & (df_ms['status'] == '已預約')].sort_values('dt_safe_f')
-                        if not fut_ls.empty:
-                            line_msg = [f"【{sn} 近期課程預告】\n家長您好，以下是接下來的排課時間：\n"]
-                            for _, f_cls in fut_ls.iterrows():
-                                f_dt = f_cls['dt_safe_f']
-                                line_msg.append(f"📌 {f_dt.strftime('%m/%d')} ({weekdays_tw[f_dt.weekday()]}) {f_dt.strftime('%H:%M')}")
-                            line_msg.append("\n再請您核對時間，謝謝老師！")
-                            st.code("\n".join(line_msg), language=None)
-                        else: st.write("沒有未來的預約課程")
-                    else: st.write("尚無紀錄。")
-    else:
-        st.info("目前名冊空空如也，請先點擊上方新增學生喔！")
+                        df_ms['dt_f'] = pd.to_datetime(df_ms['start_time'], errors='coerce')
+                        f_ls = df_ms[(df_ms['dt_f'] >= datetime.now()) & (df_ms['status'] == '已預約')].sort_values('dt_f')
+                        if not f_ls.empty:
+                            msg = [f"【{sn} 近期課程預告】\n家長您好，以下是接下來的排課時間：\n"]
+                            for _, f_c in f_ls.iterrows(): msg.append(f"📌 {f_c['dt_f'].strftime('%m/%d')} ({weekdays_tw[f_c['dt_f'].weekday()]}) {f_c['dt_f'].strftime('%H:%M')}")
+                            msg.append("\n再請您核對時間，謝謝老師！")
+                            st.code("\n".join(msg), language=None)
 # ===== 程式碼結束 =====
+                            
