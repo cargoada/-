@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 # 1. 系統核心與台灣時區設定
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
-st.set_page_config(page_title="家教排課系統 v3.5", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v3.4", page_icon="📅", layout="centered")
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/calendar']
 TW_TZ = ZoneInfo("Asia/Taipei")
 
@@ -31,7 +31,7 @@ def parse_dt(series):
     return pd.to_datetime(s, format='mixed', errors='coerce')
 
 def sanitize_edt(s_series, e_series):
-    """自動修復異常的結束時間"""
+    """自動修復異常的結束時間：確保結束時間必定在同一天合理範圍內"""
     edt = e_series.fillna(s_series + timedelta(hours=1.5))
     dur_h = (edt - s_series).dt.total_seconds() / 3600
     bad_mask = (dur_h <= 0) | (dur_h > 8) | edt.isna()
@@ -51,7 +51,7 @@ except: pass
 # ==========================================
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 v3.5")
+    st.title("👋 歡迎使用排課系統 v3.4")
     if "users" in st.secrets:
         selected_login = st.selectbox("請選擇您的身分", list(st.secrets["users"].keys()))
         if st.button("🚀 進入系統", type="primary", use_container_width=True):
@@ -132,10 +132,10 @@ def do_gcal(action, title="", s_dt=None, e_dt=None, eid=""):
     if service is None: return "" if action=="insert" else False
     try:
         if action == "insert":
-            ev = service.events().insert(calendarId=TARGET_CALENDAR_ID, body={'summary': title, 'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S', 'timeZone': 'Asia/Taipei')}}).execute()
+            ev = service.events().insert(calendarId=TARGET_CALENDAR_ID, body={'summary': title, 'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}}).execute()
             return ev.get('id', "")
         elif action == "update" and eid:
-            service.events().update(calendarId=TARGET_CALENDAR_ID, eventId=eid, body={'summary': title, 'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S', 'timeZone': 'Asia/Taipei')}}).execute()
+            service.events().update(calendarId=TARGET_CALENDAR_ID, eventId=eid, body={'summary': title, 'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}}).execute()
             return True
         elif action == "delete" and eid:
             service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=eid).execute()
@@ -199,7 +199,7 @@ def get_conflicts(new_s, new_e, exclude_id=None, exclude_draft_idx=None):
 # 側邊欄與課表診斷器
 # ==========================================
 with st.sidebar:
-    st.header(f"👤 {st.session_state.current_user} (v3.5)")
+    st.header(f"👤 {st.session_state.current_user} (v3.4)")
     st.caption(f"🕒 台灣時間：{now_tw().strftime('%Y-%m-%d %H:%M')}")
     if st.button("🔄 同步/刷新雲端", use_container_width=True, key="side_refresh"):
         st.session_state.initialized = False
@@ -469,94 +469,70 @@ with tab2:
         st.info("🎯 目前沒有任何排課紀錄。")
 
 # ==========================================
-# TAB 3: 帳單中心 (🔥 全新升級：以學生為中心的聚合帳單)
+# TAB 3: 帳單中心 (🔥 優化：同一個學生的帳單合併在一起，不照月份拆開)
 # ==========================================
 with tab3:
     st.subheader("💰 未結算課程與開單")
-    if st.button("⚡ 一鍵自動開單 (將已結束課程轉為帳單)", type="primary", key="t3_btn_inv", use_container_width=True):
+    if st.button("⚡ 一鍵依學生合併開單", type="primary", key="t3_btn_inv", use_container_width=True):
         if not st.session_state.df_sess.empty:
             df = st.session_state.df_sess.copy()
             df['dt'] = parse_dt(df['start_time'])
             df['edt'] = sanitize_edt(df['dt'], parse_dt(df['end_time']))
             df['st_clean'] = df['status'].astype(str).str.strip()
-            # 抓出已結束、非請假/取消、且尚未開單 (invoice_id == 0) 的課程
+            df['rsid'] = df['student_id'].apply(resolve_sid)
+            
+            # 找出已結束、非請假/取消、且尚未開單的課程
             pm = (~df['st_clean'].isin(['請假','已取消'])) & (df['edt'] < now_tw()) & (pd.to_numeric(df.get('invoice_id',0), errors='coerce').fillna(0) == 0)
-            df_p = df[pm].copy()
+            df_p = df[pm].dropna(subset=['dt']).copy()
+            
             if not df_p.empty:
-                df_p['mk'] = df_p['dt'].dt.strftime('%Y-%m')
                 mid = int(st.session_state.df_inv['id'].max()) if not st.session_state.df_inv.empty else 0
                 new_invs = []
-                for (sid, mk), grp in df_p.groupby(['student_id', 'mk']):
+                # 🔥 直接以學生 (rsid) 分組，將該生所有未結算課程合併成單一帳單
+                for rsid, grp in df_p.groupby('rsid'):
                     mid += 1
-                    amt = sum([((r['edt'] - r['dt']).total_seconds()/3600)*int(r.get('actual_rate',500)) for _, r in grp.iterrows() if pd.notna(r['dt'])])
-                    new_invs.append({'id': mid, 'student_id': resolve_sid(sid), 'total_amount': int(amt), 'created_at': now_tw().isoformat(), 'is_paid': 0, 'note': mk})
+                    amt = sum([((r['edt'] - r['dt']).total_seconds()/3600)*int(r.get('actual_rate',500)) for _, r in grp.iterrows()])
+                    months = sorted(grp['dt'].dt.strftime('%Y-%m').unique())
+                    note_str = months[0] if len(months) == 1 else f"{months[0]}~{months[-1]}"
+                    new_invs.append({'id': mid, 'student_id': rsid, 'total_amount': int(amt), 'created_at': now_tw().isoformat(), 'is_paid': 0, 'note': note_str})
                     st.session_state.df_sess.loc[grp.index, 'invoice_id'] = mid
                 st.session_state.df_inv = pd.concat([st.session_state.df_inv, pd.DataFrame(new_invs)], ignore_index=True)
                 if save_to_cloud("invoices", st.session_state.df_inv) and save_to_cloud("sessions", st.session_state.df_sess):
-                    st.toast(f"🧾 已產出 {len(new_invs)} 張帳單！"); st.rerun()
-            else: st.info("目前沒有已結束且未結算的課程可供開單。")
+                    st.toast(f"🧾 已依學生合併產出 {len(new_invs)} 份帳單！"); st.rerun()
+            else: st.info("目前沒有已結束且未結算的課程。")
                 
-    st.divider()
-    st.subheader("⏳ 未收賬單 (依學生聚合檢視)")
-    
+    st.divider(); st.subheader("⏳ 未收賬單 (依學生合併)")
     if not st.session_state.df_inv.empty:
-        inv_df = st.session_state.df_inv.copy()
-        inv_df['is_paid_clean'] = pd.to_numeric(inv_df['is_paid'], errors='coerce').fillna(0)
-        upd = inv_df[inv_df['is_paid_clean'] == 0].copy()
-        
+        upd = st.session_state.df_inv[pd.to_numeric(st.session_state.df_inv['is_paid'], errors='coerce').fillna(0) == 0].copy()
         if not upd.empty:
-            upd['resolved_sid'] = upd['student_id'].apply(resolve_sid)
-            
-            # 🔥 核心升級：將同一個學生的所有未收帳單聚合成群組
-            for sid, group in upd.groupby('resolved_sid'):
-                sn = name_map.get(sid, f"未知學生({sid})")
-                total_student_amt = group['total_amount'].sum()
+            upd['rsid'] = upd['student_id'].apply(resolve_sid)
+            # 🔥 顯示時也將同一個學生的所有未收帳單合併成一張卡片展示
+            for rsid, grp in upd.groupby('rsid'):
+                sn = name_map.get(rsid, f"未知({rsid})")
+                total_amt = int(grp['total_amount'].sum())
+                inv_ids = grp['id'].astype(int).tolist()
+                notes = "、".join([str(n) for n in grp['note'].unique() if str(n).strip()])
                 
                 with st.container(border=True):
-                    st.markdown(f"### 🧑‍🎓 {sn} │ 總欠費：<span style='color:#E74C3C;'>**${int(total_student_amt):,}**</span>", unsafe_allow_html=True)
-                    
-                    # 條列展示該學生的各期帳單細節
-                    for _, inv_row in group.iterrows():
-                        invid = int(inv_row['id'])
-                        note = inv_row.get('note', '')
-                        amt = int(inv_row['total_amount'])
-                        
-                        col_info, col_btn = st.columns([3, 1])
-                        col_info.write(f"📅 帳單月份：**{note}** (金額: ${amt:,})")
-                        
-                        if col_btn.button("💵 此筆已收款", key=f"pay_single_{invid}", type="secondary"):
-                            st.session_state.df_inv.loc[st.session_state.df_inv['id'] == invid, 'is_paid'] = 1
-                            if save_to_cloud("invoices", st.session_state.df_inv): st.rerun()
-                    
-                    st.markdown("---")
-                    c_all_pay, c_line = st.columns(2)
-                    
-                    # 一鍵結清該學生所有未收帳單
-                    if c_all_pay.button(f"✅ 結清 {sn} 所有帳單", key=f"pay_all_{sid}", type="primary", use_container_width=True):
-                        all_inv_ids = group['id'].tolist()
-                        st.session_state.df_inv.loc[st.session_state.df_inv['id'].isin(all_inv_ids), 'is_paid'] = 1
-                        if save_to_cloud("invoices", st.session_state.df_inv): 
-                            st.toast(f"🎉 已結清 {sn} 的所有未收帳單！")
-                            time.sleep(0.5)
-                            st.rerun()
-                            
-                    # 產生包含該學生所有未結算月份的綜合 Line 請款文案
-                    with c_line.expander("💬 複製 Line 綜合請款文案"):
-                        inv_ids_list = group['id'].tolist()
-                        mls = st.session_state.df_sess[pd.to_numeric(st.session_state.df_sess.get('invoice_id',0), errors='coerce').isin(inv_ids_list)].copy()
+                    st.markdown(f"### 🧑‍🎓 {sn} ({notes}) - 💰 ${total_amt:,}")
+                    c1, c2 = st.columns(2)
+                    if c2.button("💵 確認已收款", key=f"pay_stu_{rsid}", type="primary", use_container_width=True):
+                        st.session_state.df_inv.loc[st.session_state.df_inv['id'].isin(inv_ids), 'is_paid'] = 1
+                        if save_to_cloud("invoices", st.session_state.df_inv):
+                            st.toast(f"✅ 已結清 {sn} 的帳單！"); st.rerun()
+                    with c1.expander("💬 複製 Line 請款文案"):
+                        mls = st.session_state.df_sess[pd.to_numeric(st.session_state.df_sess.get('invoice_id',0), errors='coerce').fillna(0).astype(int).isin(inv_ids)].copy()
                         if not mls.empty:
                             mls['dt'] = parse_dt(mls['start_time'])
                             mls['edt'] = sanitize_edt(mls['dt'], parse_dt(mls['end_time']))
-                            msg = [f"【{sn} 課程費用催繳通知】\n家長您好，以下是累積的課程費用明細：\n"]
+                            msg = [f"【{sn} 課程費用明細】\n家長您好，以下是課程費用明細：\n"]
                             for _, ls in mls.dropna(subset=['dt']).sort_values('dt').iterrows():
                                 h = (ls['edt'] - ls['dt']).total_seconds()/3600
                                 msg.append(f"📌 {ls['dt'].strftime('%m/%d')} ({h:.1f}h) : ${int(h*int(ls.get('actual_rate',500))):,}")
-                            msg.append(f"\n合計總金額：${int(total_student_amt):,}元\n再麻煩您空閒時協助轉帳，謝謝老師！")
+                            msg.append(f"\n總計金額：${total_amt:,}元\n再麻煩您空閒時留意，謝謝！")
                             st.code("\n".join(msg), language=None)
-        else:
-            st.success("🎉 目前所有學生的帳單都已經全數結清囉！")
-    else:
-        st.success("🎉 目前沒有任何未收帳單紀錄。")
+        else: st.success("🎉 帳單全數結清！")
+    else: st.success("🎉 目前沒有未收帳單！")
 
 # ==========================================
 # TAB 4: 學生戰情
