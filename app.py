@@ -15,7 +15,13 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapi
 TW_TZ = ZoneInfo("Asia/Taipei")
 WEEKDAYS_TW = ["一", "二", "三", "四", "五", "六", "日"]
 STATUS_OPTS = ["已預約", "請假", "已取消", "已完成"]
-COLOR_OPTS = ["#FF5733 (紅)", "#3498DB (藍)", "#2ECC71 (綠)", "#F1C40F (黃)", "#9B59B6 (紫)"]
+
+# 🔥 精簡為紅、藍、綠三款高質感現代色系
+COLOR_OPTS = [
+    "#EF4444 🔴 珊瑚紅",
+    "#3B82F6 🔵 寶石藍",
+    "#10B981 🟢 翡翠綠"
+]
 
 SCHEMAS = {
     "sessions": ['id', 'student_id', 'start_time', 'end_time', 'status', 'actual_rate', 'google_event_id', 'progress', 'invoice_id'],
@@ -24,7 +30,81 @@ SCHEMAS = {
     "stats": ['cumulative_offset']
 }
 
-st.set_page_config(page_title="家教排課系統 v3.4 Pro", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v3.5", page_icon="📅", layout="centered")
+
+# ==========================================
+# 🎨 注入自訂 CSS 美化樣式 (現代極簡卡片風)
+# ==========================================
+st.markdown("""
+<style>
+    /* 整體版面微調 */
+    .block-container {
+        padding-top: 1.8rem;
+        padding-bottom: 3rem;
+    }
+    
+    /* 膠囊式 Tabs 導覽列美化 */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 6px;
+        background-color: rgba(128, 128, 128, 0.08);
+        padding: 6px;
+        border-radius: 14px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-weight: 600;
+        border: none !important;
+        transition: all 0.2s ease;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #3B82F6 !important;
+        color: white !important;
+        box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
+    }
+
+    /* 營收數據指標卡 (Metric) 立體化 */
+    div[data-testid="stMetric"] {
+        background: rgba(128, 128, 128, 0.04);
+        border: 1px solid rgba(128, 128, 128, 0.12);
+        padding: 14px 16px;
+        border-radius: 16px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+    }
+    div[data-testid="stMetricValue"] {
+        font-weight: 800 !important;
+        color: #3B82F6;
+    }
+
+    /* 折疊面板 (Expander) 與外框容器圓角美化 */
+    div[data-testid="stExpander"] {
+        border-radius: 14px !important;
+        border: 1px solid rgba(128, 128, 128, 0.15) !important;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
+        overflow: hidden;
+    }
+    
+    /* 按鈕圓角與動態過渡 */
+    .stButton > button {
+        border-radius: 10px;
+        font-weight: 600;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .stButton > button:active {
+        transform: scale(0.97);
+    }
+
+    /* 課程與學生專屬徽章樣式 */
+    .stu-badge {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        margin-left: 8px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # 2. 核心工具與快取連線引擎
@@ -53,7 +133,7 @@ def sanitize_edt(s_series: pd.Series, e_series: pd.Series) -> pd.Series:
 
 @st.cache_resource
 def get_gcal_service():
-    """🔥 優化：快取 Google Calendar 服務，避免每次畫面重整都重新建立連線"""
+    """快取 Google Calendar 服務"""
     try:
         if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
             creds_dict = dict(st.secrets["connections"]["gsheets"])
@@ -72,12 +152,15 @@ if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 v3.4 Pro")
-    if "users" in st.secrets:
-        selected_login = st.selectbox("請選擇您的身分", list(st.secrets["users"].keys()))
-        if st.button("🚀 進入系統", type="primary", use_container_width=True):
-            st.session_state.current_user = selected_login
-            st.rerun()
+    st.markdown("<h1 style='text-align: center; margin-bottom: 0.2rem;'>📅 家教排課系統</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; margin-bottom: 2rem;'>v3.5 極簡美學版</p>", unsafe_allow_html=True)
+    with st.container(border=True):
+        if "users" in st.secrets:
+            selected_login = st.selectbox("👤 請選擇您的老師身分", list(st.secrets["users"].keys()))
+            st.write("")
+            if st.button("🚀 進入管理系統", type="primary", use_container_width=True):
+                st.session_state.current_user = selected_login
+                st.rerun()
     st.stop()
 
 CURRENT_SHEET_URL = st.secrets["users"][st.session_state.current_user]
@@ -193,7 +276,7 @@ if not st.session_state.df_stu.empty:
         sid = str(int(r['id']))
         sn = str(r.get('name', '')).strip()
         name_map[sid] = sn
-        color_map[sid] = r.get('color', '#3498DB')
+        color_map[sid] = r.get('color', '#3B82F6')
         name_to_id[sn] = sid
         rate_map[sid] = int(pd.to_numeric(r.get('default_rate', 500), errors='coerce') or 500)
 
@@ -202,7 +285,7 @@ def resolve_sid(raw_val) -> str:
     return name_to_id.get(s, s)
 
 def prepare_sessions_df() -> pd.DataFrame:
-    """🔥 核心優化：全系統唯一一次的向量化課表解析流水線，各分頁直接共用結果"""
+    """全系統唯一一次的向量化課表解析流水線"""
     if st.session_state.df_sess.empty:
         return pd.DataFrame()
     df = st.session_state.df_sess.copy()
@@ -211,19 +294,18 @@ def prepare_sessions_df() -> pd.DataFrame:
     df['st_clean'] = df['status'].astype(str).str.strip()
     df['rsid'] = df['student_id'].apply(resolve_sid)
     df['sname'] = df['rsid'].map(lambda x: name_map.get(x, f"未知({x})"))
-    df['scolor'] = df['rsid'].map(lambda x: color_map.get(x, "#3498DB"))
+    df['scolor'] = df['rsid'].map(lambda x: color_map.get(x, "#3B82F6"))
     df['dur_h'] = (df['edt'] - df['sdt']).dt.total_seconds() / 3600.0
     df['rate_num'] = pd.to_numeric(df['actual_rate'], errors='coerce').fillna(0).astype(int)
     df['amt'] = df['dur_h'] * df['rate_num']
     df['inv_num'] = pd.to_numeric(df.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
     return df
 
-# 全域預處理課表 (含全部紀錄與僅含有效時間紀錄)
 df_all_sess = prepare_sessions_df()
 df_s = df_all_sess.dropna(subset=['sdt']).copy() if not df_all_sess.empty else pd.DataFrame()
 
 def get_conflicts(new_s: datetime, new_e: datetime, exclude_id: int = None, exclude_draft_idx: int = None) -> list:
-    """智慧衝突偵測雷達 (直接讀取預處理好的 df_s，極速比對)"""
+    """智慧衝突偵測雷達"""
     c_list = []
     if not df_s.empty:
         active = df_s[~df_s['st_clean'].isin(['請假', '已取消'])]
@@ -244,9 +326,9 @@ def get_conflicts(new_s: datetime, new_e: datetime, exclude_id: int = None, excl
 # 側邊欄與課表診斷器
 # ==========================================
 with st.sidebar:
-    st.header(f"👤 {st.session_state.current_user} (v3.4 Pro)")
-    st.caption(f"🕒 台灣時間：{now_tw().strftime('%Y-%m-%d %H:%M')}")
-    if st.button("🔄 同步/刷新雲端", use_container_width=True, key="side_refresh"):
+    st.markdown(f"### 👤 {st.session_state.current_user}")
+    st.caption(f"✨ 版本：v3.5 美學版 │ 🕒 {now_tw().strftime('%m/%d %H:%M')}")
+    if st.button("🔄 同步 / 刷新雲端", use_container_width=True, key="side_refresh"):
         st.session_state.initialized = False
         st.rerun()
         
@@ -257,7 +339,7 @@ with st.sidebar:
             bad_rows = df_all_sess[df_all_sess['sdt'].isna()]
             if not bad_rows.empty:
                 st.error(f"⚠️ 發現 {len(bad_rows)} 筆時間格式損壞的舊資料！")
-                if st.button("🧹 一鍵清除損壞資料並壓實雲端", type="primary", use_container_width=True):
+                if st.button("🧹 一鍵清除損壞資料", type="primary", use_container_width=True):
                     clean_df = st.session_state.df_sess.loc[df_all_sess['sdt'].notna()].copy()
                     if save_to_cloud("sessions", clean_df):
                         st.session_state.df_sess = clean_df
@@ -266,13 +348,14 @@ with st.sidebar:
                         st.rerun()
             else:
                 st.success("✅ 所有課程時間格式皆正常！")
-                if st.button("🔧 強制重新壓實並修復異常時數", use_container_width=True):
+                if st.button("🔧 強制重新壓實並校正時數", use_container_width=True):
                     if save_to_cloud("sessions", st.session_state.df_sess):
                         st.session_state.initialized = False
                         st.toast("✅ 雲端表格已重新壓實並校正時數！")
                         time.sleep(0.4)
                         st.rerun()
                         
+    st.divider()
     if st.button("🚪 登出系統", use_container_width=True, key="side_logout"):
         st.session_state.current_user = None
         st.session_state.initialized = False
@@ -284,19 +367,30 @@ tab1, tab2, tab3, tab4 = st.tabs(["🏠 概況中心", "📅 課表排程", "�
 # TAB 1: 概況中心
 # ==========================================
 with tab1:
-    st.subheader("📊 營收動態與行程追蹤")
+    st.markdown("#### 📊 當日行程與打卡")
     with st.container(border=True):
         cal_date = st.date_input("查看當天課表：", now_tw().date(), label_visibility="collapsed", key="t1_cal")
         if not df_s.empty:
             df_td = df_s[(df_s['sdt'].dt.date == cal_date) & (df_s['st_clean'] != '已取消')].sort_values('sdt')
-            st.markdown(f"**🔍 {cal_date.strftime('%m/%d')} 課表明細：**")
+            st.caption(f"📅 **{cal_date.strftime('%Y / %m / %d')} (星期{WEEKDAYS_TW[cal_date.weekday()]}) 課表明細**")
             if not df_td.empty:
                 for _, r in df_td.iterrows():
                     c_stt = r['st_clean']
+                    scol = r['scolor']
                     with st.container(border=True):
-                        c1, c2, c3, c4 = st.columns([3.5, 1.8, 1.8, 1.8])
-                        c1.markdown(f"▶️ <span style='color:{r['scolor']};'>●</span> **{r['sdt'].strftime('%H:%M')}** │ 🧑‍🎓 **{r['sname']}** {'(請假)' if c_stt=='請假' else ''}", unsafe_allow_html=True)
-                        if r.get('progress'): c1.caption(f"🏷 {r['progress']}")
+                        c1, c2, c3, c4 = st.columns([3.6, 1.8, 1.8, 1.8])
+                        status_tag = " <span style='color:#EF4444; font-size:0.85rem;'>(請假)</span>" if c_stt == '請假' else ""
+                        c1.markdown(
+                            f"<div style='display:flex; align-items:center;'>"
+                            f"<span style='display:inline-block; width:12px; height:12px; border-radius:50%; background-color:{scol}; margin-right:8px; box-shadow:0 0 6px {scol}88;'></span>"
+                            f"<span style='font-size:1.05rem; font-weight:700;'>{r['sdt'].strftime('%H:%M')}</span>"
+                            f"<span style='margin:0 6px; color:#ccc;'>│</span>"
+                            f"<span style='font-size:1.02rem; font-weight:600;'>{r['sname']}</span>{status_tag}"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+                        if r.get('progress'):
+                            c1.caption(f"🏷 {r['progress']}")
                         
                         is_done = (c_stt == '已完成')
                         if c2.checkbox("✅ 完課", value=is_done, key=f"t1_ck_{r['id']}") != is_done:
@@ -312,7 +406,7 @@ with tab1:
                             with st.form(f"t1_fm_{r['id']}"):
                                 nd = st.date_input("日期", r['sdt'].date())
                                 nt = st.time_input("時間", r['sdt'].time())
-                                if st.form_submit_button("💾 確定"):
+                                if st.form_submit_button("💾 確定", type="primary"):
                                     ns = datetime.combine(nd, nt)
                                     ne = ns + timedelta(hours=float(r['dur_h']))
                                     cf = get_conflicts(ns, ne, exclude_id=r['id'])
@@ -326,11 +420,13 @@ with tab1:
                                     if save_to_cloud("sessions", st.session_state.df_sess):
                                         st.toast("📅 調課成功！"); time.sleep(0.3); st.rerun()
             else:
-                st.write("🏝️ 沒排課，好好休息！")
+                st.info("🏝️ 這天沒有排課，好好休息充電吧！")
         else:
-            st.write("🏝️ 尚無排課資料。")
+            st.info("🏝️ 尚無排課資料。")
 
     if not df_s.empty:
+        st.write("")
+        st.markdown("#### 📈 財務營收總覽")
         dc = df_s[~df_s['st_clean'].isin(['請假', '已取消'])].copy()
         now = now_tw()
         tm = dc[(dc['sdt'].dt.year == now.year) & (dc['sdt'].dt.month == now.month)]['amt'].sum()
@@ -340,27 +436,30 @@ with tab1:
         
         c1, c2, c3 = st.columns(3)
         c1.metric("本月預估", f"${int(tm):,}")
-        c2.metric("未結算", f"${int(pdn):,}")
-        c3.metric("總收入", f"${int(hst):,}")
+        c2.metric("未結算學費", f"${int(pdn):,}")
+        c3.metric("歷史總收入", f"${int(hst):,}")
+        
+        st.write("")
         dc['m'] = dc['sdt'].dt.strftime('%Y-%m')
-        st.bar_chart(dc.groupby('m')['amt'].sum(), color="#3498DB")
+        st.bar_chart(dc.groupby('m')['amt'].sum(), color="#3B82F6")
 
 # ==========================================
 # TAB 2: 課表排程
 # ==========================================
 with tab2:
     if st.session_state.df_stu.empty:
-        st.warning("請先建立學生檔案！")
+        st.warning("請先至「🧑‍🎓 學生戰情」建立學生檔案！")
     else:
-        with st.expander("➕ 單堂課程 (加入預排)"):
+        st.markdown("#### ➕ 新增排課")
+        with st.expander("📌 單堂課程 (加入預排)"):
             with st.form("t2_sgl_f", clear_on_submit=True):
                 c1, c2, c3, c4 = st.columns(4)
                 sid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x], key="t2_sid")
                 dt = c2.date_input("日期", now_tw().date())
                 tm = c3.time_input("時間", now_tw().replace(minute=0, second=0).time())
                 dur = c4.slider("時數", 0.5, 4.0, 1.5, 0.5)
-                sy, prog = st.checkbox("同步 Google 日曆", key="t2_sy"), st.text_input("備註")
-                if st.form_submit_button("➕ 加入預排", type="primary"):
+                sy, prog = st.checkbox("同步 Google 日曆", key="t2_sy"), st.text_input("備註 / 預定進度")
+                if st.form_submit_button("➕ 加入預排清單", type="primary", use_container_width=True):
                     ns = datetime.combine(dt, tm)
                     ne = ns + timedelta(hours=dur)
                     cf = get_conflicts(ns, ne)
@@ -374,12 +473,12 @@ with tab2:
                 rsid = c1.selectbox("學生", list(name_map.keys()), format_func=lambda x: name_map[x], key="t2_rsid")
                 sdt = c2.date_input("開始", now_tw().date())
                 edt = c3.date_input("結束", now_tw().date() + timedelta(days=60))
-                days = st.multiselect("星期", WEEKDAYS_TW, default=["一"], key="t2_rdys")
+                days = st.multiselect("上課星期", WEEKDAYS_TW, default=["一"], key="t2_rdys")
                 c4, c5 = st.columns(2)
                 rtm = c4.time_input("時間", now_tw().replace(hour=14, minute=0, second=0).time())
                 rdur = c5.slider("時數", 0.5, 4.0, 2.0, 0.5, key="t2_rdur")
-                rsy, rnote = st.checkbox("同步日曆", key="t2_rsy"), st.text_input("區間備註")
-                if st.form_submit_button("➕ 批次加入預排", type="primary"):
+                rsy, rnote = st.checkbox("同步 Google 日曆", key="t2_rsy"), st.text_input("區間備註")
+                if st.form_submit_button("➕ 批次加入預排清單", type="primary", use_container_width=True):
                     if sdt > edt: st.error("❌ 開始日期不能晚於結束日期！")
                     elif not days: st.error("❌ 請至少選擇一個上課星期！")
                     else:
@@ -400,23 +499,23 @@ with tab2:
                             st.error("❌ 區間無符合天數！")
 
         if st.session_state.draft_list:
-            st.markdown(f"### 🛒 待送出的排課購物車 (共 {len(st.session_state.draft_list)} 堂)")
+            st.markdown(f"#### 🛒 待送出的排課購物車 (`{len(st.session_state.draft_list)}` 堂)")
             with st.container(border=True):
                 for i, d in enumerate(st.session_state.draft_list):
-                    c_inf, c_b = st.columns([5, 1])
+                    c_inf, c_b = st.columns([5.2, 0.8])
                     ss = "🔄" if d['sy'] else ""
                     dur_h = (d['edt'] - d['sdt']).total_seconds() / 3600.0
                     live_cf = get_conflicts(d['sdt'], d['edt'], exclude_draft_idx=i)
-                    base_txt = f"{d['sdt'].strftime('%m/%d %H:%M')} ({dur_h:.1f}h) │ 🧑‍🎓 **{d['sname']}** {ss} {d['prog']}"
+                    base_txt = f"**{d['sdt'].strftime('%m/%d (%a) %H:%M')}** ({dur_h:.1f}h) │ 🧑‍🎓 **{d['sname']}** {ss} {d['prog']}"
                     if live_cf: c_inf.warning(f"{base_txt} ⚠️ 與 {', '.join(live_cf)} 衝突！")
                     else: c_inf.info(base_txt)
-                    if c_b.button("❌", key=f"t2_rm_df_{i}", help="移除"):
+                    if c_b.button("✖️", key=f"t2_rm_df_{i}", help="移除此堂"):
                         st.session_state.draft_list.pop(i); st.rerun()
                 
                 cb_send, cb_clear = st.columns([3, 1])
-                if cb_clear.button("🗑️ 清空推車", use_container_width=True):
+                if cb_clear.button("🗑️ 清空", use_container_width=True):
                     st.session_state.draft_list = []; st.rerun()
-                if cb_send.button("🚀 確認送出以上所有排課", type="primary", use_container_width=True):
+                if cb_send.button("🚀 確認送出所有排課", type="primary", use_container_width=True):
                     with st.spinner("安全寫入雲端中..."):
                         mid = int(st.session_state.df_sess['id'].max()) if not st.session_state.df_sess.empty and 'id' in st.session_state.df_sess.columns else 0
                         n_ls = []
@@ -439,7 +538,6 @@ with tab2:
                                 st.session_state.draft_list = []
                                 st.toast("🎉 排課完成！"); time.sleep(0.4); st.rerun()
 
-        # 純未來未結束課程篩選 (供批量刪課與調課中心共用)
         current_t = now_tw()
         df_future = df_s[(df_s['edt'] > current_t) & (~df_s['st_clean'].isin(['已完成', '已取消']))].sort_values('sdt') if not df_s.empty else pd.DataFrame()
 
@@ -447,7 +545,7 @@ with tab2:
             if not df_future.empty:
                 ops = {f"{r['sdt'].strftime('%Y-%m-%d %H:%M')} | {r['sname']} (ID:{r['id']})": r['id'] for _, r in df_future.iterrows()}
                 sl = st.multiselect("選取要刪除的未來課程", list(ops.keys()), key="t2_mdel")
-                if st.button("🚨 批量刪除", type="primary", key="t2_bmdel") and sl:
+                if st.button("🚨 確認批量刪除", type="primary", key="t2_bmdel") and sl:
                     ids = [ops[k] for k in sl]
                     with st.spinner("清除中..."):
                         for i in ids:
@@ -460,11 +558,13 @@ with tab2:
                 st.info("🎯 目前沒有未來的預約課程需要清理。")
 
     st.divider()
-    st.subheader("📋 未來待上課表調課中心 (已上過自動隱藏)")
+    st.markdown("#### 📋 未來待上課表調課中心")
+    st.caption("僅顯示尚未結束之未來排課，已上完的課程會自動隱藏")
     if not df_future.empty:
         for _, r in df_future.iterrows():
-            ico = "⚠️(請假)" if r['st_clean'] == "請假" else ""
-            with st.expander(f"{r['sdt'].strftime('%m/%d %H:%M')} │ 🧑‍🎓 {r['sname']} {ico}"):
+            ico = " ⚠️(請假)" if r['st_clean'] == "請假" else ""
+            w_day = WEEKDAYS_TW[r['sdt'].weekday()]
+            with st.expander(f"📅 {r['sdt'].strftime('%m/%d')} (週{w_day}) {r['sdt'].strftime('%H:%M')}  │  🧑‍🎓 {r['sname']}{ico}"):
                 with st.form(f"t2_ef_{r['id']}"):
                     c_e1, c_e2 = st.columns(2)
                     n_dt = c_e1.date_input("日期", r['sdt'].date())
@@ -476,7 +576,7 @@ with tab2:
                     n_prog = st.text_input("進度 / 備註", value=str(r.get('progress', '')), key=f"t2_prg_{r['id']}")
                     cb1, cb2 = st.columns([3, 1])
                     
-                    if cb1.form_submit_button("💾 更新", type="primary"):
+                    if cb1.form_submit_button("💾 儲存更新", type="primary", use_container_width=True):
                         ns = datetime.combine(n_dt, n_st)
                         ne = ns + timedelta(hours=n_dur)
                         cf = get_conflicts(ns, ne, exclude_id=r['id'])
@@ -497,7 +597,7 @@ with tab2:
                                 do_gcal("update", f"家教: {r['sname']}", ns, ne, gid)
                         if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
                             
-                    if cb2.form_submit_button("🗑️ 刪除"):
+                    if cb2.form_submit_button("🗑️ 刪除", use_container_width=True):
                         gid = clean_gid(r.get('google_event_id', ""))
                         if gid: do_gcal("delete", eid=gid)
                         st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id'] != r['id']]
@@ -509,7 +609,7 @@ with tab2:
 # TAB 3: 帳單中心 (依學生合併開單與檢視)
 # ==========================================
 with tab3:
-    st.subheader("💰 未結算課程與開單")
+    st.markdown("#### 💰 未結算課程與開單")
     if st.button("⚡ 一鍵依學生合併開單", type="primary", key="t3_btn_inv", use_container_width=True):
         if not df_s.empty:
             pm = (~df_s['st_clean'].isin(['請假', '已取消'])) & (df_s['edt'] < now_tw()) & (df_s['inv_num'] == 0)
@@ -520,7 +620,7 @@ with tab3:
                 new_invs = []
                 for rsid, grp in df_p.groupby('rsid'):
                     mid += 1
-                    amt = int(grp['amt'].sum())  # 🔥 向量化瞬間加總
+                    amt = int(grp['amt'].sum())
                     months = sorted(grp['sdt'].dt.strftime('%Y-%m').unique())
                     note_str = months[0] if len(months) == 1 else f"{months[0]}~{months[-1]}"
                     new_invs.append({'id': mid, 'student_id': rsid, 'total_amount': amt, 'created_at': now_tw().isoformat(), 'is_paid': 0, 'note': note_str})
@@ -534,19 +634,27 @@ with tab3:
             st.info("目前沒有任何排課紀錄。")
                 
     st.divider()
-    st.subheader("⏳ 未收賬單 (依學生合併)")
+    st.markdown("#### ⏳ 待收學費帳單 (依學生歸戶)")
     if not st.session_state.df_inv.empty:
         upd = st.session_state.df_inv[pd.to_numeric(st.session_state.df_inv['is_paid'], errors='coerce').fillna(0) == 0].copy()
         if not upd.empty:
             upd['rsid'] = upd['student_id'].apply(resolve_sid)
             for rsid, grp in upd.groupby('rsid'):
                 sn = name_map.get(rsid, f"未知({rsid})")
+                scol = color_map.get(rsid, "#3B82F6")
                 total_amt = int(grp['total_amount'].sum())
                 inv_ids = grp['id'].astype(int).tolist()
                 notes = "、".join([str(n) for n in grp['note'].unique() if str(n).strip()])
                 
                 with st.container(border=True):
-                    st.markdown(f"### 🧑‍🎓 {sn} ({notes}) - 💰 ${total_amt:,}")
+                    st.markdown(
+                        f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;'>"
+                        f"<div><span style='display:inline-block; width:12px; height:12px; border-radius:50%; background-color:{scol}; margin-right:8px;'></span>"
+                        f"<span style='font-size:1.2rem; font-weight:700;'>{sn}</span> <span style='color:gray; font-size:0.9rem;'>({notes})</span></div>"
+                        f"<div style='font-size:1.3rem; font-weight:800; color:#EF4444;'>${total_amt:,}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
                     c1, c2 = st.columns(2)
                     if c2.button("💵 確認已收款", key=f"pay_stu_{rsid}", type="primary", use_container_width=True):
                         st.session_state.df_inv.loc[st.session_state.df_inv['id'].isin(inv_ids), 'is_paid'] = 1
@@ -562,21 +670,21 @@ with tab3:
                                 msg.append(f"\n總計金額：${total_amt:,}元\n再麻煩您空閒時留意，謝謝！")
                                 st.code("\n".join(msg), language=None)
         else:
-            st.success("🎉 帳單全數結清！")
+            st.success("🎉 太棒了！所有學生的帳單皆已全數結清！")
     else:
-        st.success("🎉 目前沒有未收帳單！")
+        st.success("🎉 目前沒有任何未收帳單！")
 
 # ==========================================
-# TAB 4: 學生戰情
+# TAB 4: 學生戰情 (🔥 精簡為紅、藍、綠三色 + 視覺美化)
 # ==========================================
 with tab4:
-    with st.expander("➕ 新增學生"):
+    with st.expander("➕ 新增學生檔案"):
         with st.form("t4_asf", clear_on_submit=True):
-            c1, c2 = st.columns(2)
-            n = c1.text_input("姓名")
-            rt = c2.number_input("時薪", value=700, step=50)
-            col = st.selectbox("顏色", COLOR_OPTS)
-            if st.form_submit_button("儲存", type="primary"):
+            c1, c2, c3 = st.columns([2, 1.5, 2])
+            n = c1.text_input("學生姓名")
+            rt = c2.number_input("預設時薪", value=700, step=50)
+            col = c3.selectbox("代表顏色 (紅/藍/綠)", COLOR_OPTS)
+            if st.form_submit_button("💾 儲存建立", type="primary", use_container_width=True):
                 if not n.strip():
                     st.error("❌ 請輸入學生姓名！")
                 else:
@@ -590,13 +698,21 @@ with tab4:
     if not st.session_state.df_stu.empty:
         for _, r in st.session_state.df_stu.iterrows():
             sid, sn = str(int(r['id'])), r['name']
+            scol = r.get('color', '#3B82F6')
+            srate = int(pd.to_numeric(r.get('default_rate', 500), errors='coerce') or 500)
             df_ms = df_s[df_s['rsid'] == sid].copy() if not df_s.empty else pd.DataFrame()
 
             with st.container(border=True):
-                c1, c2, c3 = st.columns([0.5, 4, 1.5])
-                c1.markdown(f"<div style='width:25px;height:25px;background-color:{r.get('color','#3498DB')};border-radius:50%;'></div>", unsafe_allow_html=True)
-                c2.markdown(f"### {sn} (${r.get('default_rate',500)}/hr)")
-                if c3.button("🗑️ 移除", key=f"t4_ds_{sid}"):
+                c_head, c_del = st.columns([4.5, 1.2])
+                c_head.markdown(
+                    f"<div style='display:flex; align-items:center; margin-bottom:6px;'>"
+                    f"<div style='width:18px; height:18px; background-color:{scol}; border-radius:50%; margin-right:10px; box-shadow:0 0 8px {scol}88;'></div>"
+                    f"<span style='font-size:1.25rem; font-weight:800;'>{sn}</span>"
+                    f"<span class='stu-badge' style='background-color:{scol}22; color:{scol}; border:1px solid {scol}55;'>${srate}/hr</span>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+                if c_del.button("🗑️ 移除", key=f"t4_ds_{sid}", use_container_width=True):
                     ud = st.session_state.df_stu[st.session_state.df_stu['id'] != r['id']]
                     if save_to_cloud("students", ud):
                         st.session_state.df_stu = ud; st.rerun()
@@ -607,16 +723,16 @@ with tab4:
                         if not df_valid.empty:
                             wp = df_valid[df_valid['sdt'] >= df_valid['sdt'].max() - timedelta(days=6)].sort_values('sdt')
                             for _, w in wp.iterrows():
-                                st.write(f"📅 星期{WEEKDAYS_TW[w['sdt'].weekday()]} {w['sdt'].strftime('%H:%M')}")
+                                st.write(f"📅 星期{WEEKDAYS_TW[w['sdt'].weekday()]} {w['sdt'].strftime('%H:%M')} ({w['dur_h']:.1f}h)")
                             wk = st.number_input("展延週數", 1, 8, 4, key=f"t4_w_{sid}")
                             sy = st.checkbox("同步日曆", key=f"t4_sg_{sid}")
-                            if st.button("🛒 加入預排購物車", key=f"t4_rn_{sid}", type="primary"):
+                            if st.button("🛒 加入預排購物車", key=f"t4_rn_{sid}", type="primary", use_container_width=True):
                                 cnt = 0
                                 for i in range(1, int(wk) + 1):
                                     for _, p in wp.iterrows():
                                         ns = p['sdt'] + timedelta(weeks=i)
                                         ne = ns + timedelta(hours=float(p['dur_h']))
-                                        st.session_state.draft_list.append({'sid': sid, 'sname': sn, 'sdt': ns, 'edt': ne, 'sy': sy, 'prog': '', 'rate': int(r.get('default_rate', 500))})
+                                        st.session_state.draft_list.append({'sid': sid, 'sname': sn, 'sdt': ns, 'edt': ne, 'sy': sy, 'prog': '', 'rate': srate})
                                         cnt += 1
                                 st.toast(f"✅ 已將 {cnt} 堂續排課加入「📅 課表排程」的購物車！"); time.sleep(0.5); st.rerun()
                         else:
@@ -629,8 +745,12 @@ with tab4:
                         p_ls = df_ms[(df_ms['sdt'] < now_tw()) & (df_ms['st_clean'] != '已取消')].sort_values('sdt', ascending=False)
                         if not p_ls.empty:
                             for _, p_c in p_ls.iterrows():
-                                st.markdown(f"**📅 {p_c['sdt'].strftime('%Y-%m-%d %H:%M')}** {'(請假)' if p_c['st_clean'] == '請假' else ''}")
+                                st.markdown(f"**📅 {p_c['sdt'].strftime('%Y-%m-%d %H:%M')}** {'⚠️(請假)' if p_c['st_clean'] == '請假' else ''}")
                                 st.write(p_c['progress'] if p_c['progress'] else "（無紀錄）"); st.divider()
+                        else:
+                            st.caption("尚無歷史上課紀錄。")
+                    else:
+                        st.caption("尚無排課紀錄。")
 
                 with st.expander("💬 產生 Line 課表通知文案"):
                     if not df_ms.empty:
@@ -641,4 +761,8 @@ with tab4:
                                 msg.append(f"📌 {f_c['sdt'].strftime('%m/%d')} ({WEEKDAYS_TW[f_c['sdt'].weekday()]}) {f_c['sdt'].strftime('%H:%M')}")
                             msg.append("\n再請您核對時間，謝謝！")
                             st.code("\n".join(msg), language=None)
+                        else:
+                            st.caption("目前沒有未來的預約課程。")
+                    else:
+                        st.caption("尚無排課紀錄。")
 # ===== 程式碼結束 =====
