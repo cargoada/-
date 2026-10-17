@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 # 1. 系統核心與台灣時區設定
 # ==========================================
 TARGET_CALENDAR_ID = 'cargoada@gmail.com' 
-st.set_page_config(page_title="家教排課系統 v3.4", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v3.5", page_icon="📅", layout="centered")
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/calendar']
 TW_TZ = ZoneInfo("Asia/Taipei")
 
@@ -31,7 +31,7 @@ def parse_dt(series):
     return pd.to_datetime(s, format='mixed', errors='coerce')
 
 def sanitize_edt(s_series, e_series):
-    """自動修復異常的結束時間：確保結束時間必定在同一天合理範圍內"""
+    """自動修復異常的結束時間"""
     edt = e_series.fillna(s_series + timedelta(hours=1.5))
     dur_h = (edt - s_series).dt.total_seconds() / 3600
     bad_mask = (dur_h <= 0) | (dur_h > 8) | edt.isna()
@@ -51,7 +51,7 @@ except: pass
 # ==========================================
 if 'current_user' not in st.session_state: st.session_state.current_user = None
 if st.session_state.current_user is None:
-    st.title("👋 歡迎使用排課系統 v3.4")
+    st.title("👋 歡迎使用排課系統 v3.5")
     if "users" in st.secrets:
         selected_login = st.selectbox("請選擇您的身分", list(st.secrets["users"].keys()))
         if st.button("🚀 進入系統", type="primary", use_container_width=True):
@@ -132,10 +132,10 @@ def do_gcal(action, title="", s_dt=None, e_dt=None, eid=""):
     if service is None: return "" if action=="insert" else False
     try:
         if action == "insert":
-            ev = service.events().insert(calendarId=TARGET_CALENDAR_ID, body={'summary': title, 'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}}).execute()
+            ev = service.events().insert(calendarId=TARGET_CALENDAR_ID, body={'summary': title, 'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S', 'timeZone': 'Asia/Taipei')}}).execute()
             return ev.get('id', "")
         elif action == "update" and eid:
-            service.events().update(calendarId=TARGET_CALENDAR_ID, eventId=eid, body={'summary': title, 'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}}).execute()
+            service.events().update(calendarId=TARGET_CALENDAR_ID, eventId=eid, body={'summary': title, 'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S', 'timeZone': 'Asia/Taipei')}}).execute()
             return True
         elif action == "delete" and eid:
             service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=eid).execute()
@@ -199,7 +199,7 @@ def get_conflicts(new_s, new_e, exclude_id=None, exclude_draft_idx=None):
 # 側邊欄與課表診斷器
 # ==========================================
 with st.sidebar:
-    st.header(f"👤 {st.session_state.current_user} (v3.4)")
+    st.header(f"👤 {st.session_state.current_user} (v3.5)")
     st.caption(f"🕒 台灣時間：{now_tw().strftime('%Y-%m-%d %H:%M')}")
     if st.button("🔄 同步/刷新雲端", use_container_width=True, key="side_refresh"):
         st.session_state.initialized = False
@@ -414,7 +414,6 @@ with tab2:
                 else:
                     st.info("🎯 目前沒有未來的預約課程需要清理。")
 
-    # 🔥 標題改為「未來待上課表調課中心」，並執行雙重鐵腕過濾（時間已過 或 狀態已完成/取消 全部隱藏）
     st.divider()
     st.subheader("📋 未來待上課表調課中心 (已上過自動隱藏)")
     if not st.session_state.df_sess.empty:
@@ -425,7 +424,6 @@ with tab2:
         df_l = df_l.dropna(subset=['dt'])
         
         current_t = now_tw()
-        # 雙重過濾：1. 結束時間必須大於現在 (edt > current_t) 且 2. 狀態不是已完成/已取消/請假
         df_f = df_l[(df_l['edt'] > current_t) & (~df_l['st_clean'].isin(['已完成', '已取消']))].sort_values('dt')
         
         if not df_f.empty:
@@ -471,16 +469,17 @@ with tab2:
         st.info("🎯 目前沒有任何排課紀錄。")
 
 # ==========================================
-# TAB 3: 帳單中心
+# TAB 3: 帳單中心 (🔥 全新升級：以學生為中心的聚合帳單)
 # ==========================================
 with tab3:
     st.subheader("💰 未結算課程與開單")
-    if st.button("⚡ 分月開單", type="primary", key="t3_btn_inv", use_container_width=True):
+    if st.button("⚡ 一鍵自動開單 (將已結束課程轉為帳單)", type="primary", key="t3_btn_inv", use_container_width=True):
         if not st.session_state.df_sess.empty:
             df = st.session_state.df_sess.copy()
             df['dt'] = parse_dt(df['start_time'])
             df['edt'] = sanitize_edt(df['dt'], parse_dt(df['end_time']))
             df['st_clean'] = df['status'].astype(str).str.strip()
+            # 抓出已結束、非請假/取消、且尚未開單 (invoice_id == 0) 的課程
             pm = (~df['st_clean'].isin(['請假','已取消'])) & (df['edt'] < now_tw()) & (pd.to_numeric(df.get('invoice_id',0), errors='coerce').fillna(0) == 0)
             df_p = df[pm].copy()
             if not df_p.empty:
@@ -495,32 +494,69 @@ with tab3:
                 st.session_state.df_inv = pd.concat([st.session_state.df_inv, pd.DataFrame(new_invs)], ignore_index=True)
                 if save_to_cloud("invoices", st.session_state.df_inv) and save_to_cloud("sessions", st.session_state.df_sess):
                     st.toast(f"🧾 已產出 {len(new_invs)} 張帳單！"); st.rerun()
-            else: st.info("目前沒有已結束且未結算的課程。")
+            else: st.info("目前沒有已結束且未結算的課程可供開單。")
                 
-    st.divider(); st.subheader("⏳ 未收賬單")
+    st.divider()
+    st.subheader("⏳ 未收賬單 (依學生聚合檢視)")
+    
     if not st.session_state.df_inv.empty:
-        upd = st.session_state.df_inv[pd.to_numeric(st.session_state.df_inv['is_paid'], errors='coerce').fillna(0) == 0]
+        inv_df = st.session_state.df_inv.copy()
+        inv_df['is_paid_clean'] = pd.to_numeric(inv_df['is_paid'], errors='coerce').fillna(0)
+        upd = inv_df[inv_df['is_paid_clean'] == 0].copy()
+        
         if not upd.empty:
-            for _, r in upd.iterrows():
-                sn = name_map.get(resolve_sid(r['student_id']), '未知')
+            upd['resolved_sid'] = upd['student_id'].apply(resolve_sid)
+            
+            # 🔥 核心升級：將同一個學生的所有未收帳單聚合成群組
+            for sid, group in upd.groupby('resolved_sid'):
+                sn = name_map.get(sid, f"未知學生({sid})")
+                total_student_amt = group['total_amount'].sum()
+                
                 with st.container(border=True):
-                    st.markdown(f"### {sn} ({r.get('note', '')}) - 💰 ${int(r['total_amount']):,}")
-                    c1, c2 = st.columns(2)
-                    if c2.button("💵 已收款", key=f"pay_{r['id']}", type="primary", use_container_width=True):
-                        st.session_state.df_inv.loc[st.session_state.df_inv['id']==r['id'], 'is_paid'] = 1
-                        if save_to_cloud("invoices", st.session_state.df_inv): st.rerun()
-                    with c1.expander("💬 複製 Line 請款文案"):
-                        mls = st.session_state.df_sess[pd.to_numeric(st.session_state.df_sess.get('invoice_id',0), errors='coerce').fillna(0) == int(r['id'])].copy()
+                    st.markdown(f"### 🧑‍🎓 {sn} │ 總欠費：<span style='color:#E74C3C;'>**${int(total_student_amt):,}**</span>", unsafe_allow_html=True)
+                    
+                    # 條列展示該學生的各期帳單細節
+                    for _, inv_row in group.iterrows():
+                        invid = int(inv_row['id'])
+                        note = inv_row.get('note', '')
+                        amt = int(inv_row['total_amount'])
+                        
+                        col_info, col_btn = st.columns([3, 1])
+                        col_info.write(f"📅 帳單月份：**{note}** (金額: ${amt:,})")
+                        
+                        if col_btn.button("💵 此筆已收款", key=f"pay_single_{invid}", type="secondary"):
+                            st.session_state.df_inv.loc[st.session_state.df_inv['id'] == invid, 'is_paid'] = 1
+                            if save_to_cloud("invoices", st.session_state.df_inv): st.rerun()
+                    
+                    st.markdown("---")
+                    c_all_pay, c_line = st.columns(2)
+                    
+                    # 一鍵結清該學生所有未收帳單
+                    if c_all_pay.button(f"✅ 結清 {sn} 所有帳單", key=f"pay_all_{sid}", type="primary", use_container_width=True):
+                        all_inv_ids = group['id'].tolist()
+                        st.session_state.df_inv.loc[st.session_state.df_inv['id'].isin(all_inv_ids), 'is_paid'] = 1
+                        if save_to_cloud("invoices", st.session_state.df_inv): 
+                            st.toast(f"🎉 已結清 {sn} 的所有未收帳單！")
+                            time.sleep(0.5)
+                            st.rerun()
+                            
+                    # 產生包含該學生所有未結算月份的綜合 Line 請款文案
+                    with c_line.expander("💬 複製 Line 綜合請款文案"):
+                        inv_ids_list = group['id'].tolist()
+                        mls = st.session_state.df_sess[pd.to_numeric(st.session_state.df_sess.get('invoice_id',0), errors='coerce').isin(inv_ids_list)].copy()
                         if not mls.empty:
                             mls['dt'] = parse_dt(mls['start_time'])
                             mls['edt'] = sanitize_edt(mls['dt'], parse_dt(mls['end_time']))
-                            msg = [f"【{sn} {r.get('note','')} 課程費用明細】\n家長您好，以下是本期課程費用明細：\n"]
+                            msg = [f"【{sn} 課程費用催繳通知】\n家長您好，以下是累積的課程費用明細：\n"]
                             for _, ls in mls.dropna(subset=['dt']).sort_values('dt').iterrows():
                                 h = (ls['edt'] - ls['dt']).total_seconds()/3600
                                 msg.append(f"📌 {ls['dt'].strftime('%m/%d')} ({h:.1f}h) : ${int(h*int(ls.get('actual_rate',500))):,}")
-                            msg.append(f"\n總計金額：${int(r['total_amount']):,}元\n再麻煩您空閒時留意，謝謝！")
+                            msg.append(f"\n合計總金額：${int(total_student_amt):,}元\n再麻煩您空閒時協助轉帳，謝謝老師！")
                             st.code("\n".join(msg), language=None)
-        else: st.success("🎉 帳單全數結清！")
+        else:
+            st.success("🎉 目前所有學生的帳單都已經全數結清囉！")
+    else:
+        st.success("🎉 目前沒有任何未收帳單紀錄。")
 
 # ==========================================
 # TAB 4: 學生戰情
