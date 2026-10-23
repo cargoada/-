@@ -16,7 +16,6 @@ TW_TZ = ZoneInfo("Asia/Taipei")
 WEEKDAYS_TW = ["一", "二", "三", "四", "五", "六", "日"]
 STATUS_OPTS = ["已預約", "請假", "已取消", "已完成"]
 
-# 🔥 精簡為紅、藍、綠三款高質感現代色系
 COLOR_OPTS = [
     "#EF4444 🔴 珊瑚紅",
     "#3B82F6 🔵 寶石藍",
@@ -30,20 +29,17 @@ SCHEMAS = {
     "stats": ['cumulative_offset']
 }
 
-st.set_page_config(page_title="家教排課系統 v3.5", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v3.5.1", page_icon="📅", layout="centered")
 
 # ==========================================
 # 🎨 注入自訂 CSS 美化樣式 (現代極簡卡片風)
 # ==========================================
 st.markdown("""
 <style>
-    /* 整體版面微調 */
     .block-container {
         padding-top: 1.8rem;
         padding-bottom: 3rem;
     }
-    
-    /* 膠囊式 Tabs 導覽列美化 */
     .stTabs [data-baseweb="tab-list"] {
         gap: 6px;
         background-color: rgba(128, 128, 128, 0.08);
@@ -62,8 +58,6 @@ st.markdown("""
         color: white !important;
         box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
     }
-
-    /* 營收數據指標卡 (Metric) 立體化 */
     div[data-testid="stMetric"] {
         background: rgba(128, 128, 128, 0.04);
         border: 1px solid rgba(128, 128, 128, 0.12);
@@ -75,16 +69,12 @@ st.markdown("""
         font-weight: 800 !important;
         color: #3B82F6;
     }
-
-    /* 折疊面板 (Expander) 與外框容器圓角美化 */
     div[data-testid="stExpander"] {
         border-radius: 14px !important;
         border: 1px solid rgba(128, 128, 128, 0.15) !important;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
         overflow: hidden;
     }
-    
-    /* 按鈕圓角與動態過渡 */
     .stButton > button {
         border-radius: 10px;
         font-weight: 600;
@@ -93,8 +83,6 @@ st.markdown("""
     .stButton > button:active {
         transform: scale(0.97);
     }
-
-    /* 課程與學生專屬徽章樣式 */
     .stu-badge {
         display: inline-block;
         padding: 3px 10px;
@@ -107,7 +95,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 核心工具與快取連線引擎
+# 2. 核心工具與日曆智慧引擎
 # ==========================================
 def now_tw() -> datetime:
     """取得台灣標準時間 (無時區標籤)"""
@@ -125,25 +113,98 @@ def parse_dt(series: pd.Series) -> pd.Series:
     return pd.to_datetime(s, format='mixed', errors='coerce')
 
 def sanitize_edt(s_series: pd.Series, e_series: pd.Series) -> pd.Series:
-    """自動修復異常的結束時間：確保時數介於 (0, 8] 小時內，否則預設 1.5 小時"""
+    """自動修復異常的結束時間"""
     edt = e_series.fillna(s_series + timedelta(hours=1.5))
     dur_h = (edt - s_series).dt.total_seconds() / 3600.0
     bad_mask = (dur_h <= 0) | (dur_h > 8) | edt.isna()
     return edt.where(~bad_mask, s_series + timedelta(hours=1.5))
 
-@st.cache_resource
 def get_gcal_service():
-    """快取 Google Calendar 服務"""
+    """🔥 每次操作建立新鮮的 Google Calendar 連線，防止 SSL 憑證閒置斷線"""
     try:
         if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
             creds_dict = dict(st.secrets["connections"]["gsheets"])
             creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-            return build('calendar', 'v3', credentials=creds)
-    except Exception:
-        pass
+            return build('calendar', 'v3', credentials=creds, cache_discovery=False)
+    except Exception as e:
+        st.toast(f"⚠️ 日曆認證失敗: {e}", icon="⚠️")
     return None
 
-service = get_gcal_service()
+def find_gcal_event(service, title: str, old_s_dt: datetime) -> str:
+    """🔍 智慧反查：當試算表遺失 event_id 時，自動用『原時段 + 學生姓名』去日曆找出該筆行程 ID"""
+    if service is None or old_s_dt is None or pd.isna(old_s_dt):
+        return ""
+    try:
+        t_min = (old_s_dt - timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%S+08:00')
+        t_max = (old_s_dt + timedelta(hours=4)).strftime('%Y-%m-%dT%H:%M:%S+08:00')
+        events_result = service.events().list(
+            calendarId=TARGET_CALENDAR_ID,
+            timeMin=t_min,
+            timeMax=t_max,
+            singleEvents=True
+        ).execute()
+        sname_pure = title.replace("家教:", "").strip()
+        for ev in events_result.get('items', []):
+            summary = ev.get('summary', '')
+            if title in summary or (sname_pure and sname_pure in summary):
+                return ev.get('id', "")
+    except Exception:
+        pass
+    return ""
+
+def do_gcal(action: str, title: str = "", s_dt: datetime = None, e_dt: datetime = None, eid: str = "", old_s_dt: datetime = None) -> str:
+    """
+    🔥 終極日曆同步核心：
+    - insert: 新增日曆並回傳新 ID
+    - update: 更新日曆（若無 ID 則自動反查原時段；若反查也無，則自動補建新日曆！回傳最終有效 ID）
+    - delete: 刪除日曆（若無 ID 則自動反查原時段並刪除）
+    """
+    service = get_gcal_service()
+    eid = clean_gid(eid)
+    if service is None:
+        return eid
+
+    # 若沒有 eid，啟動智慧反查去日曆裡抓出來
+    if not eid and old_s_dt is not None:
+        eid = find_gcal_event(service, title, old_s_dt)
+
+    body = {}
+    if s_dt is not None and e_dt is not None:
+        body = {
+            'summary': title,
+            'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
+            'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}
+        }
+
+    try:
+        if action == "insert":
+            ev = service.events().insert(calendarId=TARGET_CALENDAR_ID, body=body).execute()
+            return ev.get('id', "")
+            
+        elif action == "update":
+            if eid:
+                try:
+                    service.events().update(calendarId=TARGET_CALENDAR_ID, eventId=eid, body=body).execute()
+                    return eid
+                except Exception:
+                    # 若原 ID 在日曆上已被手動刪掉或失效，直接在新時段補建一筆！
+                    ev = service.events().insert(calendarId=TARGET_CALENDAR_ID, body=body).execute()
+                    return ev.get('id', "")
+            else:
+                # 原本排課沒勾同步，調課時自動幫老師補建進 Google 日曆！
+                ev = service.events().insert(calendarId=TARGET_CALENDAR_ID, body=body).execute()
+                return ev.get('id', "")
+                
+        elif action == "delete":
+            if eid:
+                try:
+                    service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=eid).execute()
+                except Exception:
+                    pass
+            return ""
+    except Exception as e:
+        st.toast(f"⚠️ 日曆同步異常: {e}", icon="⚠️")
+    return eid
 
 # ==========================================
 # 3. 身分驗證與登入
@@ -153,7 +214,7 @@ if 'current_user' not in st.session_state:
 
 if st.session_state.current_user is None:
     st.markdown("<h1 style='text-align: center; margin-bottom: 0.2rem;'>📅 家教排課系統</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray; margin-bottom: 2rem;'>v3.5 極簡美學版</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; margin-bottom: 2rem;'>v3.5.1 日曆雙向追蹤版</p>", unsafe_allow_html=True)
     with st.container(border=True):
         if "users" in st.secrets:
             selected_login = st.selectbox("👤 請選擇您的老師身分", list(st.secrets["users"].keys()))
@@ -187,6 +248,7 @@ def get_cloud_data(ws_name: str) -> pd.DataFrame:
                          (df['student_id'].astype(str).str.strip().replace('nan', '') != '')
             df = df[valid_mask].copy()
             df['status'] = df['status'].astype(str).str.strip()
+            df['google_event_id'] = df['google_event_id'].apply(clean_gid)
             
         for num_col in ['id', 'invoice_id', 'actual_rate', 'is_paid', 'total_amount', 'default_rate']:
             if num_col in df.columns:
@@ -213,6 +275,7 @@ def save_to_cloud(ws_name: str, df: pd.DataFrame) -> bool:
             valid_mask = df_save['start_time'].astype(str).str.strip().replace('nan', '') != ''
             df_save = df_save[valid_mask].copy()
             df_save['status'] = df_save['status'].astype(str).str.strip()
+            df_save['google_event_id'] = df_save['google_event_id'].apply(clean_gid)
             s_dt = parse_dt(df_save['start_time'])
             e_dt = sanitize_edt(s_dt, parse_dt(df_save['end_time']))
             valid_dt = s_dt.notna()
@@ -226,31 +289,6 @@ def save_to_cloud(ws_name: str, df: pd.DataFrame) -> bool:
     except Exception as e:
         st.error(f"❌ 雲端寫入失敗: {e}")
         return False
-
-def do_gcal(action: str, title: str = "", s_dt: datetime = None, e_dt: datetime = None, eid: str = ""):
-    eid = clean_gid(eid)
-    if service is None:
-        return "" if action == "insert" else False
-    try:
-        body = {}
-        if s_dt and e_dt:
-            body = {
-                'summary': title,
-                'start': {'dateTime': s_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'},
-                'end': {'dateTime': e_dt.strftime('%Y-%m-%dT%H:%M:%S'), 'timeZone': 'Asia/Taipei'}
-            }
-        if action == "insert":
-            ev = service.events().insert(calendarId=TARGET_CALENDAR_ID, body=body).execute()
-            return ev.get('id', "")
-        elif action == "update" and eid:
-            service.events().update(calendarId=TARGET_CALENDAR_ID, eventId=eid, body=body).execute()
-            return True
-        elif action == "delete" and eid:
-            service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=eid).execute()
-            return True
-    except Exception:
-        st.toast(f"⚠️ 日曆{action}未同步 (可能已手動刪除)", icon="⚠️")
-    return "" if action == "insert" else False
 
 # ==========================================
 # 5. 狀態初始化與集中式資料預處理流水線
@@ -269,7 +307,6 @@ if not st.session_state.initialized:
         st.session_state.df_stats = get_cloud_data("stats")
         st.session_state.initialized = True
 
-# 建立學生字典映射
 name_map, rate_map, color_map, name_to_id = {}, {}, {}, {}
 if not st.session_state.df_stu.empty:
     for _, r in st.session_state.df_stu.iterrows():
@@ -285,7 +322,6 @@ def resolve_sid(raw_val) -> str:
     return name_to_id.get(s, s)
 
 def prepare_sessions_df() -> pd.DataFrame:
-    """全系統唯一一次的向量化課表解析流水線"""
     if st.session_state.df_sess.empty:
         return pd.DataFrame()
     df = st.session_state.df_sess.copy()
@@ -305,7 +341,6 @@ df_all_sess = prepare_sessions_df()
 df_s = df_all_sess.dropna(subset=['sdt']).copy() if not df_all_sess.empty else pd.DataFrame()
 
 def get_conflicts(new_s: datetime, new_e: datetime, exclude_id: int = None, exclude_draft_idx: int = None) -> list:
-    """智慧衝突偵測雷達"""
     c_list = []
     if not df_s.empty:
         active = df_s[~df_s['st_clean'].isin(['請假', '已取消'])]
@@ -327,7 +362,7 @@ def get_conflicts(new_s: datetime, new_e: datetime, exclude_id: int = None, excl
 # ==========================================
 with st.sidebar:
     st.markdown(f"### 👤 {st.session_state.current_user}")
-    st.caption(f"✨ 版本：v3.5 美學版 │ 🕒 {now_tw().strftime('%m/%d %H:%M')}")
+    st.caption(f"✨ 版本：v3.5.1 │ 🕒 {now_tw().strftime('%m/%d %H:%M')}")
     if st.button("🔄 同步 / 刷新雲端", use_container_width=True, key="side_refresh"):
         st.session_state.initialized = False
         st.rerun()
@@ -398,9 +433,11 @@ with tab1:
                             if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
                             
                         if c3.button("❌ 停課", key=f"t1_cl_{r['id']}"):
-                            do_gcal("delete", eid=r.get('google_event_id', ""))
+                            # 🔥 傳入 old_s_dt，即使遺失 event_id 也能去日曆反查並刪除
+                            do_gcal("delete", title=f"家教: {r['sname']}", eid=r.get('google_event_id', ""), old_s_dt=r['sdt'])
                             st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id'] != r['id']]
-                            if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
+                            if save_to_cloud("sessions", st.session_state.df_sess):
+                                st.toast("🗑️ 課程與日曆已同步刪除！"); time.sleep(0.3); st.rerun()
                             
                         with c4.popover("📅 調課"):
                             with st.form(f"t1_fm_{r['id']}"):
@@ -412,13 +449,16 @@ with tab1:
                                     cf = get_conflicts(ns, ne, exclude_id=r['id'])
                                     if cf: st.toast(f"⚠️ 調課提醒：與 {', '.join(cf)} 衝突！", icon="⚠️")
                                     
+                                    # 🔥 自動更新或補建日曆，並寫回最新 event_id
+                                    new_gid = do_gcal("update", title=f"家教: {r['sname']}", s_dt=ns, e_dt=ne, eid=r.get('google_event_id', ""), old_s_dt=r['sdt'])
+                                    
                                     idx = st.session_state.df_sess['id'] == r['id']
                                     st.session_state.df_sess.loc[idx, 'start_time'] = ns.strftime('%Y-%m-%dT%H:%M:%S')
                                     st.session_state.df_sess.loc[idx, 'end_time'] = ne.strftime('%Y-%m-%dT%H:%M:%S')
+                                    st.session_state.df_sess.loc[idx, 'google_event_id'] = new_gid
                                     
-                                    do_gcal("update", f"家教: {r['sname']}", ns, ne, r.get('google_event_id', ""))
                                     if save_to_cloud("sessions", st.session_state.df_sess):
-                                        st.toast("📅 調課成功！"); time.sleep(0.3); st.rerun()
+                                        st.toast("📅 調課與日曆已同步更新！"); time.sleep(0.3); st.rerun()
             else:
                 st.info("🏝️ 這天沒有排課，好好休息充電吧！")
         else:
@@ -458,7 +498,8 @@ with tab2:
                 dt = c2.date_input("日期", now_tw().date())
                 tm = c3.time_input("時間", now_tw().replace(minute=0, second=0).time())
                 dur = c4.slider("時數", 0.5, 4.0, 1.5, 0.5)
-                sy, prog = st.checkbox("同步 Google 日曆", key="t2_sy"), st.text_input("備註 / 預定進度")
+                # 🔥 預設勾選同步日曆，避免忘記打勾導致後續日曆不連動
+                sy, prog = st.checkbox("同步 Google 日曆", value=True, key="t2_sy"), st.text_input("備註 / 預定進度")
                 if st.form_submit_button("➕ 加入預排清單", type="primary", use_container_width=True):
                     ns = datetime.combine(dt, tm)
                     ne = ns + timedelta(hours=dur)
@@ -477,7 +518,7 @@ with tab2:
                 c4, c5 = st.columns(2)
                 rtm = c4.time_input("時間", now_tw().replace(hour=14, minute=0, second=0).time())
                 rdur = c5.slider("時數", 0.5, 4.0, 2.0, 0.5, key="t2_rdur")
-                rsy, rnote = st.checkbox("同步 Google 日曆", key="t2_rsy"), st.text_input("區間備註")
+                rsy, rnote = st.checkbox("同步 Google 日曆", value=True, key="t2_rsy"), st.text_input("區間備註")
                 if st.form_submit_button("➕ 批次加入預排清單", type="primary", use_container_width=True):
                     if sdt > edt: st.error("❌ 開始日期不能晚於結束日期！")
                     elif not days: st.error("❌ 請至少選擇一個上課星期！")
@@ -547,13 +588,16 @@ with tab2:
                 sl = st.multiselect("選取要刪除的未來課程", list(ops.keys()), key="t2_mdel")
                 if st.button("🚨 確認批量刪除", type="primary", key="t2_bmdel") and sl:
                     ids = [ops[k] for k in sl]
-                    with st.spinner("清除中..."):
+                    with st.spinner("同步清除雲端與日曆中..."):
                         for i in ids:
-                            gid = clean_gid(st.session_state.df_sess.loc[st.session_state.df_sess['id'] == i, 'google_event_id'].iloc[0])
-                            if gid: do_gcal("delete", eid=gid)
+                            row_match = df_s[df_s['id'] == i]
+                            if not row_match.empty:
+                                r_del = row_match.iloc[0]
+                                do_gcal("delete", title=f"家教: {r_del['sname']}", eid=r_del.get('google_event_id', ""), old_s_dt=r_del['sdt'])
                         updated_df_del = st.session_state.df_sess[~st.session_state.df_sess['id'].isin(ids)]
                         if save_to_cloud("sessions", updated_df_del):
-                            st.session_state.df_sess = updated_df_del; st.rerun()
+                            st.session_state.df_sess = updated_df_del
+                            st.toast("🗑️ 批量刪課與日曆同步完成！"); time.sleep(0.3); st.rerun()
             else:
                 st.info("🎯 目前沒有未來的預約課程需要清理。")
 
@@ -583,25 +627,28 @@ with tab2:
                         if cf: st.toast(f"⚠️ 調課注意：與 {', '.join(cf)} 衝突！", icon="⚠️")
                         
                         idx = st.session_state.df_sess['id'] == r['id']
+                        
+                        # 🔥 無論當初有無 event_id，皆強制執行日曆同步更新或刪除
+                        if stt in ["請假", "已取消"]:
+                            do_gcal("delete", title=f"家教: {r['sname']}", eid=r.get('google_event_id', ""), old_s_dt=r['sdt'])
+                            st.session_state.df_sess.loc[idx, 'google_event_id'] = ""
+                        else:
+                            new_gid = do_gcal("update", title=f"家教: {r['sname']}", s_dt=ns, e_dt=ne, eid=r.get('google_event_id', ""), old_s_dt=r['sdt'])
+                            st.session_state.df_sess.loc[idx, 'google_event_id'] = new_gid
+                            
                         st.session_state.df_sess.loc[idx, 'start_time'] = ns.strftime('%Y-%m-%dT%H:%M:%S')
                         st.session_state.df_sess.loc[idx, 'end_time'] = ne.strftime('%Y-%m-%dT%H:%M:%S')
                         st.session_state.df_sess.loc[idx, 'status'] = stt
                         st.session_state.df_sess.loc[idx, 'progress'] = n_prog
                         
-                        gid = clean_gid(r.get('google_event_id', ""))
-                        if gid:
-                            if stt in ["請假", "已取消"]:
-                                do_gcal("delete", eid=gid)
-                                st.session_state.df_sess.loc[idx, 'google_event_id'] = ""
-                            else:
-                                do_gcal("update", f"家教: {r['sname']}", ns, ne, gid)
-                        if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
+                        if save_to_cloud("sessions", st.session_state.df_sess):
+                            st.toast("✅ 課表與 Google 日曆已同步更新！"); time.sleep(0.3); st.rerun()
                             
                     if cb2.form_submit_button("🗑️ 刪除", use_container_width=True):
-                        gid = clean_gid(r.get('google_event_id', ""))
-                        if gid: do_gcal("delete", eid=gid)
+                        do_gcal("delete", title=f"家教: {r['sname']}", eid=r.get('google_event_id', ""), old_s_dt=r['sdt'])
                         st.session_state.df_sess = st.session_state.df_sess[st.session_state.df_sess['id'] != r['id']]
-                        if save_to_cloud("sessions", st.session_state.df_sess): st.rerun()
+                        if save_to_cloud("sessions", st.session_state.df_sess):
+                            st.toast("🗑️ 課程與日曆已同步刪除！"); time.sleep(0.3); st.rerun()
     else:
         st.info("🎯 目前沒有待上的未來排課。")
 
@@ -675,7 +722,7 @@ with tab3:
         st.success("🎉 目前沒有任何未收帳單！")
 
 # ==========================================
-# TAB 4: 學生戰情 (🔥 精簡為紅、藍、綠三色 + 視覺美化)
+# TAB 4: 學生戰情
 # ==========================================
 with tab4:
     with st.expander("➕ 新增學生檔案"):
@@ -725,7 +772,7 @@ with tab4:
                             for _, w in wp.iterrows():
                                 st.write(f"📅 星期{WEEKDAYS_TW[w['sdt'].weekday()]} {w['sdt'].strftime('%H:%M')} ({w['dur_h']:.1f}h)")
                             wk = st.number_input("展延週數", 1, 8, 4, key=f"t4_w_{sid}")
-                            sy = st.checkbox("同步日曆", key=f"t4_sg_{sid}")
+                            sy = st.checkbox("同步日曆", value=True, key=f"t4_sg_{sid}")
                             if st.button("🛒 加入預排購物車", key=f"t4_rn_{sid}", type="primary", use_container_width=True):
                                 cnt = 0
                                 for i in range(1, int(wk) + 1):
