@@ -29,7 +29,7 @@ SCHEMAS = {
     "stats": ['cumulative_offset']
 }
 
-st.set_page_config(page_title="家教排課系統 v3.5.2", page_icon="📅", layout="centered")
+st.set_page_config(page_title="家教排課系統 v3.5.3", page_icon="📅", layout="centered")
 
 # ==========================================
 # 🎨 注入自訂 CSS 美化樣式 (現代極簡卡片風)
@@ -61,13 +61,14 @@ st.markdown("""
     div[data-testid="stMetric"] {
         background: rgba(128, 128, 128, 0.04);
         border: 1px solid rgba(128, 128, 128, 0.12);
-        padding: 14px 16px;
+        padding: 12px 14px;
         border-radius: 16px;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
     }
     div[data-testid="stMetricValue"] {
         font-weight: 800 !important;
         color: #3B82F6;
+        font-size: 1.45rem !important;
     }
     div[data-testid="stExpander"] {
         border-radius: 14px !important;
@@ -197,7 +198,7 @@ if 'current_user' not in st.session_state:
 
 if st.session_state.current_user is None:
     st.markdown("<h1 style='text-align: center; margin-bottom: 0.2rem;'>📅 家教排課系統</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray; margin-bottom: 2rem;'>v3.5.2 帳單秒收極速版</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; margin-bottom: 2rem;'>v3.5.3 營收與待繳追蹤版</p>", unsafe_allow_html=True)
     with st.container(border=True):
         if "users" in st.secrets:
             selected_login = st.selectbox("👤 請選擇您的老師身分", list(st.secrets["users"].keys()))
@@ -251,10 +252,6 @@ def get_cloud_data(ws_name: str) -> pd.DataFrame:
         return pd.DataFrame(columns=req_cols)
 
 def save_to_cloud(ws_name: str, df: pd.DataFrame, fast_mode: bool = False) -> bool:
-    """
-    🔥 極速寫入升級：
-    - fast_mode=True 時（如帳單收款），跳過繁重的時間正規化與快取全域清除，直接送出更新！
-    """
     req_cols = SCHEMAS.get(ws_name, list(df.columns))
     try:
         if fast_mode:
@@ -335,7 +332,6 @@ def prepare_sessions_df() -> pd.DataFrame:
     df['inv_num'] = pd.to_numeric(df.get('invoice_id', 0), errors='coerce').fillna(0).astype(int)
     return df
 
-# 🔥 智慧記憶體快取：只有當課表真正被修改時才重新運算，按帳單收款時 0 秒跳過！
 if st.session_state.get('sess_dirty', True):
     st.session_state.cached_df_all = prepare_sessions_df()
     st.session_state.cached_df_s = st.session_state.cached_df_all.dropna(subset=['sdt']).copy() if not st.session_state.cached_df_all.empty else pd.DataFrame()
@@ -343,6 +339,21 @@ if st.session_state.get('sess_dirty', True):
 
 df_all_sess = st.session_state.cached_df_all
 df_s = st.session_state.cached_df_s
+
+# 🔥 預先計算「未收學費帳單」的人數與各學生欠費明細（供 TAB 1 概況中心與 TAB 3 帳單中心共用）
+unpaid_inv_df = pd.DataFrame()
+unpaid_stu_count = 0
+unpaid_summary_list = []
+
+if not st.session_state.df_inv.empty:
+    unpaid_inv_df = st.session_state.df_inv[pd.to_numeric(st.session_state.df_inv['is_paid'], errors='coerce').fillna(0) == 0].copy()
+    if not unpaid_inv_df.empty:
+        unpaid_inv_df['rsid'] = unpaid_inv_df['student_id'].apply(resolve_sid)
+        unpaid_stu_count = unpaid_inv_df['rsid'].nunique()
+        for rsid_u, grp_u in unpaid_inv_df.groupby('rsid'):
+            sn_u = name_map.get(rsid_u, f"未知({rsid_u})")
+            amt_u = int(grp_u['total_amount'].sum())
+            unpaid_summary_list.append(f"**{sn_u}** (${amt_u:,})")
 
 def get_conflicts(new_s: datetime, new_e: datetime, exclude_id: int = None, exclude_draft_idx: int = None) -> list:
     c_list = []
@@ -366,7 +377,7 @@ def get_conflicts(new_s: datetime, new_e: datetime, exclude_id: int = None, excl
 # ==========================================
 with st.sidebar:
     st.markdown(f"### 👤 {st.session_state.current_user}")
-    st.caption(f"✨ 版本：v3.5.2 │ 🕒 {now_tw().strftime('%m/%d %H:%M')}")
+    st.caption(f"✨ 版本：v3.5.3 │ 🕒 {now_tw().strftime('%m/%d %H:%M')}")
     if st.button("🔄 同步 / 刷新雲端", use_container_width=True, key="side_refresh"):
         st.session_state.initialized = False
         st.rerun()
@@ -474,10 +485,16 @@ with tab1:
         offset = float(st.session_state.df_stats['cumulative_offset'].iloc[0]) if not st.session_state.df_stats.empty else 0.0
         hst = dc['amt'].sum() + offset
         
-        c1, c2, c3 = st.columns(3)
+        # 🔥 四欄式指標：新增「待繳費人數」（與帳單中心未繳學費人數同步）
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("本月預估", f"${int(tm):,}")
-        c2.metric("未結算學費", f"${int(pdn):,}")
-        c3.metric("歷史總收入", f"${int(hst):,}")
+        c2.metric("未開單學費", f"${int(pdn):,}")
+        c3.metric("待繳費人數", f"{unpaid_stu_count} 人")
+        c4.metric("歷史總收入", f"${int(hst):,}")
+        
+        # 若有未繳費學生，直接在總覽下方顯示醒目名單與金額
+        if unpaid_stu_count > 0:
+            st.caption(f"⏳ **帳單中心待收款學生**：{' 、 '.join(unpaid_summary_list)}")
         
         st.write("")
         dc['m'] = dc['sdt'].dt.strftime('%Y-%m')
@@ -651,7 +668,7 @@ with tab2:
         st.info("🎯 目前沒有待上的未來排課。")
 
 # ==========================================
-# TAB 3: 帳單中心 (🔥 極速收款引擎 + 批次秒結功能)
+# TAB 3: 帳單中心 (極速收款引擎 + 批次秒結功能)
 # ==========================================
 with tab3:
     st.markdown("#### 💰 未結算課程與開單")
@@ -679,80 +696,71 @@ with tab3:
             st.info("目前沒有任何排課紀錄。")
                 
     st.divider()
-    st.markdown("#### ⏳ 待收學費帳單 (依學生歸戶)")
+    st.markdown(f"#### ⏳ 待收學費帳單 (目前共 `{unpaid_stu_count}` 人未繳)")
     
-    if not st.session_state.df_inv.empty:
-        upd = st.session_state.df_inv[st.session_state.df_inv['is_paid'] == 0].copy()
-        if not upd.empty:
-            upd['rsid'] = upd['student_id'].apply(resolve_sid)
+    if not unpaid_inv_df.empty:
+        inv_sessions_map = {}
+        if not df_s.empty:
+            unpaid_inv_ids = set(unpaid_inv_df['id'].astype(int).tolist())
+            rel_sess = df_s[df_s['inv_num'].isin(unpaid_inv_ids)].sort_values('sdt')
+            for inv_id, s_grp in rel_sess.groupby('inv_num'):
+                inv_sessions_map[inv_id] = s_grp
+
+        student_groups = list(unpaid_inv_df.groupby('rsid'))
+        if len(student_groups) > 1:
+            with st.expander("⚡ 多人同時收款？點此勾選一次極速結清"):
+                with st.form("batch_pay_form", clear_on_submit=True):
+                    batch_opts = {}
+                    for rsid, grp in student_groups:
+                        sn = name_map.get(rsid, f"未知({rsid})")
+                        t_amt = int(grp['total_amount'].sum())
+                        label = f"{sn} (共 ${t_amt:,})"
+                        batch_opts[label] = grp['id'].astype(int).tolist()
+                    selected_labels = st.multiselect("請選擇已收款的學生（可多選）", list(batch_opts.keys()))
+                    if st.form_submit_button("✅ 確認一次結清所選帳單", type="primary", use_container_width=True):
+                        if selected_labels:
+                            all_pay_ids = [iid for lbl in selected_labels for iid in batch_opts[lbl]]
+                            st.session_state.df_inv.loc[st.session_state.df_inv['id'].isin(all_pay_ids), 'is_paid'] = 1
+                            if save_to_cloud("invoices", st.session_state.df_inv, fast_mode=True):
+                                st.toast(f"⚡ 已極速結清 {len(selected_labels)} 位學生的帳單！")
+                                st.rerun()
+
+        for rsid, grp in student_groups:
+            sn = name_map.get(rsid, f"未知({rsid})")
+            scol = color_map.get(rsid, "#3B82F6")
+            total_amt = int(grp['total_amount'].sum())
+            inv_ids = grp['id'].astype(int).tolist()
+            notes = "、".join([str(n) for n in grp['note'].unique() if str(n).strip()])
             
-            # 預先將所有帳單對應的課程按 invoice_id 分組索引，避免在迴圈中重複掃描整張表
-            inv_sessions_map = {}
-            if not df_s.empty:
-                unpaid_inv_ids = set(upd['id'].astype(int).tolist())
-                rel_sess = df_s[df_s['inv_num'].isin(unpaid_inv_ids)].sort_values('sdt')
-                for inv_id, s_grp in rel_sess.groupby('inv_num'):
-                    inv_sessions_map[inv_id] = s_grp
-
-            # 若有多位學生待收款，提供「多筆快速勾選一次結清」通道（0延遲勾選、1次雲端通訊）
-            student_groups = list(upd.groupby('rsid'))
-            if len(student_groups) > 1:
-                with st.expander("⚡ 多人同時收款？點此勾選一次極速結清"):
-                    with st.form("batch_pay_form", clear_on_submit=True):
-                        batch_opts = {}
-                        for rsid, grp in student_groups:
-                            sn = name_map.get(rsid, f"未知({rsid})")
-                            t_amt = int(grp['total_amount'].sum())
-                            label = f"{sn} (共 ${t_amt:,})"
-                            batch_opts[label] = grp['id'].astype(int).tolist()
-                        selected_labels = st.multiselect("請選擇已收款的學生（可多選）", list(batch_opts.keys()))
-                        if st.form_submit_button("✅ 確認一次結清所選帳單", type="primary", use_container_width=True):
-                            if selected_labels:
-                                all_pay_ids = [iid for lbl in selected_labels for iid in batch_opts[lbl]]
-                                st.session_state.df_inv.loc[st.session_state.df_inv['id'].isin(all_pay_ids), 'is_paid'] = 1
-                                if save_to_cloud("invoices", st.session_state.df_inv, fast_mode=True):
-                                    st.toast(f"⚡ 已極速結清 {len(selected_labels)} 位學生的帳單！")
-                                    st.rerun()
-
-            for rsid, grp in student_groups:
-                sn = name_map.get(rsid, f"未知({rsid})")
-                scol = color_map.get(rsid, "#3B82F6")
-                total_amt = int(grp['total_amount'].sum())
-                inv_ids = grp['id'].astype(int).tolist()
-                notes = "、".join([str(n) for n in grp['note'].unique() if str(n).strip()])
-                
-                with st.container(border=True):
-                    st.markdown(
-                        f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;'>"
-                        f"<div><span style='display:inline-block; width:12px; height:12px; border-radius:50%; background-color:{scol}; margin-right:8px;'></span>"
-                        f"<span style='font-size:1.2rem; font-weight:700;'>{sn}</span> <span style='color:gray; font-size:0.9rem;'>({notes})</span></div>"
-                        f"<div style='font-size:1.3rem; font-weight:800; color:#EF4444;'>${total_amt:,}</div>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-                    c1, c2 = st.columns(2)
-                    # 🔥 單筆極速收款：啟用 fast_mode=True 且不觸發課表重算，移除所有 sleep 延遲
-                    if c2.button("💵 確認已收款", key=f"pay_stu_{rsid}", type="primary", use_container_width=True):
-                        st.session_state.df_inv.loc[st.session_state.df_inv['id'].isin(inv_ids), 'is_paid'] = 1
-                        if save_to_cloud("invoices", st.session_state.df_inv, fast_mode=True):
-                            st.toast(f"⚡ 已秒速結清 {sn} 的帳單！")
-                            st.rerun()
-                            
-                    with c1.expander("💬 複製 Line 請款文案"):
-                        matched_dfs = [inv_sessions_map[iid] for iid in inv_ids if iid in inv_sessions_map]
-                        if matched_dfs:
-                            mls = pd.concat(matched_dfs).sort_values('sdt')
-                            msg = [f"【{sn} 課程費用明細】\n家長您好，以下是課程費用明細：\n"]
-                            for _, ls in mls.iterrows():
-                                msg.append(f"📌 {ls['sdt'].strftime('%m/%d')} ({ls['dur_h']:.1f}h) : ${int(ls['amt']):,}")
-                            msg.append(f"\n總計金額：${total_amt:,}元\n再麻煩您空閒時留意，謝謝！")
-                            st.code("\n".join(msg), language=None)
-                        else:
-                            st.caption("無對應課程明細。")
-        else:
-            st.success("🎉 太棒了！所有學生的帳單皆已全數結清！")
+            with st.container(border=True):
+                st.markdown(
+                    f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;'>"
+                    f"<div><span style='display:inline-block; width:12px; height:12px; border-radius:50%; background-color:{scol}; margin-right:8px;'></span>"
+                    f"<span style='font-size:1.2rem; font-weight:700;'>{sn}</span> <span style='color:gray; font-size:0.9rem;'>({notes})</span></div>"
+                    f"<div style='font-size:1.3rem; font-weight:800; color:#EF4444;'>${total_amt:,}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+                c1, c2 = st.columns(2)
+                if c2.button("💵 確認已收款", key=f"pay_stu_{rsid}", type="primary", use_container_width=True):
+                    st.session_state.df_inv.loc[st.session_state.df_inv['id'].isin(inv_ids), 'is_paid'] = 1
+                    if save_to_cloud("invoices", st.session_state.df_inv, fast_mode=True):
+                        st.toast(f"⚡ 已秒速結清 {sn} 的帳單！")
+                        st.rerun()
+                        
+                with c1.expander("💬 複製 Line 請款文案"):
+                    matched_dfs = [inv_sessions_map[iid] for iid in inv_ids if iid in inv_sessions_map]
+                    if matched_dfs:
+                        mls = pd.concat(matched_dfs).sort_values('sdt')
+                        msg = [f"【{sn} 課程費用明細】\n家長您好，以下是課程費用明細：\n"]
+                        for _, ls in mls.iterrows():
+                            msg.append(f"📌 {ls['sdt'].strftime('%m/%d')} ({ls['dur_h']:.1f}h) : ${int(ls['amt']):,}")
+                        msg.append(f"\n總計金額：${total_amt:,}元\n再麻煩您空閒時留意，謝謝！")
+                        st.code("\n".join(msg), language=None)
+                    else:
+                        st.caption("無對應課程明細。")
     else:
-        st.success("🎉 目前沒有任何未收帳單！")
+        st.success("🎉 太棒了！所有學生的帳單皆已全數結清！")
 
 # ==========================================
 # TAB 4: 學生戰情
